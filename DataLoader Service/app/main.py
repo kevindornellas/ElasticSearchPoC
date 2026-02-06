@@ -14,6 +14,7 @@ import io
 import tempfile
 import gzip
 import json
+import ast
 from typing import Generator
 
 logging.basicConfig(level=logging.INFO)
@@ -1146,7 +1147,7 @@ def load_product_search(config: ProductSearchConfig, background_tasks: Backgroun
     }
 
 
-# Open Food Facts dataset URL
+# Open Food Facts dataset URL - using smaller delta export for faster loading
 OPEN_FOOD_FACTS_URL = "https://static.openfoodfacts.org/data/openfoodfacts-products.jsonl.gz"
 
 
@@ -1212,134 +1213,147 @@ def load_open_food_facts_background(config: OpenFoodFactsConfig):
         es.indices.create(index=config.index_name, body=index_mapping)
         logger.info(f"Created Open Food Facts index: {config.index_name}")
         
-        # Download and stream the gzipped JSONL file
-        loading_status["message"] = "Downloading Open Food Facts data (this may take a while)..."
-        logger.info(f"Downloading from: {OPEN_FOOD_FACTS_URL}")
-        
-        response = requests.get(OPEN_FOOD_FACTS_URL, stream=True, timeout=300)
-        response.raise_for_status()
-        
-        loading_status["message"] = "Processing food products..."
+        # Stream the gzipped JSONL file (don't load into memory)
+        loading_status["message"] = "Streaming Open Food Facts data..."
+        logger.info(f"Streaming from: {OPEN_FOOD_FACTS_URL}")
         
         batch_texts = []
         batch_docs = []
         product_count = 0
         seen_products = set()
+        lines_processed = 0
         
-        # Stream and decompress the gzipped JSONL file
-        with gzip.GzipFile(fileobj=io.BytesIO(response.content)) as gz:
-            for line in gz:
+        # Stream with requests and decompress on the fly
+        with requests.get(OPEN_FOOD_FACTS_URL, stream=True, timeout=60) as response:
+            response.raise_for_status()
+            
+            # Create a decompressing stream
+            decompressor = gzip.GzipFile(fileobj=response.raw)
+            
+            # Read line by line
+            buffer = b''
+            for chunk in iter(lambda: decompressor.read(8192), b''):
                 if config.max_documents and product_count >= config.max_documents:
                     break
                 
-                try:
-                    item = json.loads(line.decode('utf-8'))
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    continue
+                buffer += chunk
                 
-                code = item.get('code', '') or item.get('_id', '')
-                if not code:
-                    continue
-                
-                # Skip duplicates
-                if code in seen_products:
-                    continue
-                seen_products.add(code)
-                
-                product_name = item.get('product_name', '') or ''
-                brands = item.get('brands', '') or ''
-                categories = item.get('categories', '') or ''
-                
-                # Skip products without a name
-                if not product_name or len(product_name) < 3:
-                    continue
-                
-                ingredients_text = item.get('ingredients_text', '') or ''
-                
-                # Create combined text for embedding
-                combined_text = f"{product_name}. {brands}. {categories}. {ingredients_text}".strip()
-                
-                if len(combined_text) < 10:
-                    continue
-                
-                # Parse nutritional values safely
-                def safe_float(val):
+                while b'\n' in buffer:
+                    line, buffer = buffer.split(b'\n', 1)
+                    lines_processed += 1
+                    
+                    if config.max_documents and product_count >= config.max_documents:
+                        break
+                    
                     try:
-                        return float(val) if val else None
-                    except (ValueError, TypeError):
-                        return None
-                
-                doc = {
-                    "code": code,
-                    "product_name": product_name,
-                    "brands": brands,
-                    "categories": categories,
-                    "ingredients_text": ingredients_text,
-                    "nutriscore_grade": item.get('nutriscore_grade', ''),
-                    "nova_group": str(item.get('nova_group', '')),
-                    "ecoscore_grade": item.get('ecoscore_grade', ''),
-                    "quantity": item.get('quantity', ''),
-                    "packaging": item.get('packaging', ''),
-                    "countries": item.get('countries', ''),
-                    "image_url": item.get('image_url', ''),
-                    "energy_kcal_100g": safe_float(item.get('energy-kcal_100g')),
-                    "fat_100g": safe_float(item.get('fat_100g')),
-                    "carbohydrates_100g": safe_float(item.get('carbohydrates_100g')),
-                    "proteins_100g": safe_float(item.get('proteins_100g')),
-                    "salt_100g": safe_float(item.get('salt_100g')),
-                    "sugars_100g": safe_float(item.get('sugars_100g')),
-                    "fiber_100g": safe_float(item.get('fiber_100g')),
-                    "combined_text": combined_text
-                }
-                
-                batch_texts.append(combined_text[:1000])
-                batch_docs.append(doc)
-                product_count += 1
-                
-                # Update progress
-                if product_count % 500 == 0:
-                    loading_status["message"] = f"Processing food products... {product_count} processed"
-                    loading_status["progress"] = product_count
-                    loading_status["total"] = config.max_documents or 0
-                
-                # Process batch when full
-                if len(batch_texts) >= config.embedding_batch_size:
-                    embeddings = model.encode(batch_texts, show_progress_bar=False)
+                        item = json.loads(line.decode('utf-8'))
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        continue
                     
-                    for i, doc in enumerate(batch_docs):
-                        doc["embedding"] = embeddings[i].tolist()
+                    code = item.get('code', '') or item.get('_id', '')
+                    if not code:
+                        continue
                     
-                    actions = []
-                    for doc in batch_docs:
-                        actions.append({
-                            "_index": config.index_name,
-                            "_id": doc["code"],
-                            "_source": doc
-                        })
+                    # Skip duplicates
+                    if code in seen_products:
+                        continue
+                    seen_products.add(code)
                     
-                    helpers.bulk(
-                        es,
-                        actions,
-                        chunk_size=config.batch_size,
-                        request_timeout=120,
-                        raise_on_error=False
-                    )
+                    product_name = item.get('product_name', '') or ''
+                    brands = item.get('brands', '') or ''
+                    categories = item.get('categories', '') or ''
                     
-                    batch_texts = []
-                    batch_docs = []
+                    # Skip products without a name
+                    if not product_name or len(product_name) < 3:
+                        continue
+                    
+                    ingredients_text = item.get('ingredients_text', '') or ''
+                    
+                    # Create combined text for embedding
+                    combined_text = f"{product_name}. {brands}. {categories}. {ingredients_text}".strip()
+                    
+                    if len(combined_text) < 10:
+                        continue
+                    
+                    # Parse nutritional values safely
+                    def safe_float(val):
+                        try:
+                            return float(val) if val else None
+                        except (ValueError, TypeError):
+                            return None
+                    
+                    doc = {
+                        "code": code,
+                        "product_name": product_name,
+                        "brands": brands,
+                        "categories": categories,
+                        "ingredients_text": ingredients_text,
+                        "nutriscore_grade": item.get('nutriscore_grade', ''),
+                        "nova_group": str(item.get('nova_group', '')),
+                        "ecoscore_grade": item.get('ecoscore_grade', ''),
+                        "quantity": item.get('quantity', ''),
+                        "packaging": item.get('packaging', ''),
+                        "countries": item.get('countries', ''),
+                        "image_url": item.get('image_url', ''),
+                        "energy_kcal_100g": safe_float(item.get('energy-kcal_100g')),
+                        "fat_100g": safe_float(item.get('fat_100g')),
+                        "carbohydrates_100g": safe_float(item.get('carbohydrates_100g')),
+                        "proteins_100g": safe_float(item.get('proteins_100g')),
+                        "salt_100g": safe_float(item.get('salt_100g')),
+                        "sugars_100g": safe_float(item.get('sugars_100g')),
+                        "fiber_100g": safe_float(item.get('fiber_100g')),
+                        "combined_text": combined_text
+                    }
+                    
+                    batch_texts.append(combined_text[:1000])
+                    batch_docs.append(doc)
+                    product_count += 1
+                    
+                    # Update progress
+                    if product_count % 500 == 0:
+                        loading_status["message"] = f"Processing food products... {product_count} indexed (scanned {lines_processed} lines)"
+                        loading_status["progress"] = product_count
+                        loading_status["total"] = config.max_documents or 0
+                        logger.info(f"Progress: {product_count} products indexed")
+                    
+                    # Process batch when full
+                    if len(batch_texts) >= config.embedding_batch_size:
+                        embeddings = model.encode(batch_texts, show_progress_bar=False)
+                        
+                        for i, d in enumerate(batch_docs):
+                            d["embedding"] = embeddings[i].tolist()
+                        
+                        actions = []
+                        for d in batch_docs:
+                            actions.append({
+                                "_index": config.index_name,
+                                "_id": d["code"],
+                                "_source": d
+                            })
+                        
+                        helpers.bulk(
+                            es,
+                            actions,
+                            chunk_size=config.batch_size,
+                            request_timeout=120,
+                            raise_on_error=False
+                        )
+                        
+                        batch_texts = []
+                        batch_docs = []
         
         # Process remaining batch
         if batch_texts:
             embeddings = model.encode(batch_texts, show_progress_bar=False)
-            for i, doc in enumerate(batch_docs):
-                doc["embedding"] = embeddings[i].tolist()
+            for i, d in enumerate(batch_docs):
+                d["embedding"] = embeddings[i].tolist()
             
             actions = []
-            for doc in batch_docs:
+            for d in batch_docs:
                 actions.append({
                     "_index": config.index_name,
-                    "_id": doc["code"],
-                    "_source": doc
+                    "_id": d["code"],
+                    "_source": d
                 })
             
             helpers.bulk(
@@ -1417,28 +1431,25 @@ def load_amazon_best_sellers_background(config: AmazonBestSellersConfig):
         logger.info("Loading embedding model...")
         model = get_embedding_model()
         
-        # Create index with Amazon product mapping
+        # Create index with Amazon product mapping (matching actual CSV columns)
         loading_status["message"] = "Creating Amazon Best Sellers index..."
         index_mapping = {
             "mappings": {
                 "properties": {
                     "asin": {"type": "keyword"},
                     "product_title": {"type": "text", "analyzer": "standard"},
+                    "description": {"type": "text", "analyzer": "standard"},
                     "product_price": {"type": "text"},
-                    "product_original_price": {"type": "text"},
                     "currency": {"type": "keyword"},
                     "product_star_rating": {"type": "float"},
                     "product_num_ratings": {"type": "integer"},
                     "product_url": {"type": "keyword"},
                     "product_photo": {"type": "keyword"},
-                    "product_num_offers": {"type": "integer"},
-                    "product_availability": {"type": "text"},
-                    "is_best_seller": {"type": "boolean"},
-                    "is_amazon_choice": {"type": "boolean"},
-                    "is_prime": {"type": "boolean"},
-                    "climate_pledge_friendly": {"type": "boolean"},
-                    "sales_volume": {"type": "text"},
+                    "brand": {"type": "keyword"},
                     "category": {"type": "keyword"},
+                    "in_stock": {"type": "boolean"},
+                    "color": {"type": "text"},
+                    "size": {"type": "text"},
                     "embedding": {
                         "type": "dense_vector",
                         "dims": EMBEDDING_DIMS,
@@ -1494,61 +1505,82 @@ def load_amazon_best_sellers_background(config: AmazonBestSellersConfig):
                         if config.max_documents and product_count >= config.max_documents:
                             break
                         
-                        asin = row.get('asin', '') or row.get('ASIN', '') or str(product_count)
+                        # Get ASIN from sku field or additionalProperties
+                        asin = row.get('sku', '')
+                        if not asin:
+                            # Try to extract from additionalProperties
+                            try:
+                                props = ast.literal_eval(row.get('additionalProperties', '[]'))
+                                for prop in props:
+                                    if prop.get('name', '').lower() == 'asin':
+                                        asin = prop.get('value', '')
+                                        break
+                            except:
+                                pass
+                        if not asin:
+                            asin = str(product_count)
                         
                         # Skip duplicates
                         if asin in seen_products:
                             continue
                         seen_products.add(asin)
                         
-                        product_title = row.get('product_title', '') or row.get('title', '') or ''
+                        # Use 'name' field for product title
+                        product_title = row.get('name', '')
                         
                         if not product_title or len(product_title) < 5:
                             continue
                         
-                        # Parse numeric fields safely
+                        # Parse numeric fields safely - use 'rating' and 'reviewCount'
                         try:
-                            star_rating = float(row.get('product_star_rating', 0) or 0)
+                            star_rating = float(row.get('rating', 0) or 0)
                         except (ValueError, TypeError):
                             star_rating = 0.0
                         
                         try:
-                            num_ratings = int(row.get('product_num_ratings', 0) or 0)
+                            num_ratings = int(row.get('reviewCount', 0) or 0)
                         except (ValueError, TypeError):
                             num_ratings = 0
                         
+                        # Parse price from salePrice
+                        product_price = row.get('salePrice', '') or row.get('listedPrice', '')
+                        
+                        # Get category from breadcrumbs or nodeName
+                        category = row.get('nodeName', '') or row.get('new_path', '')
+                        
+                        # Get description
+                        description = row.get('description', '')
+                        
+                        # Check inStock
+                        in_stock = row.get('inStock', '').lower() in ('true', '1', 'yes', 'in stock')
+                        
+                        # Parse image URLs
+                        image_url = ''
                         try:
-                            num_offers = int(row.get('product_num_offers', 0) or 0)
-                        except (ValueError, TypeError):
-                            num_offers = 0
+                            images = ast.literal_eval(row.get('imageUrls', '[]'))
+                            if images:
+                                image_url = images[0]
+                        except:
+                            pass
                         
-                        # Parse boolean fields
-                        is_best_seller = str(row.get('is_best_seller', '')).lower() in ('true', '1', 'yes')
-                        is_amazon_choice = str(row.get('is_amazon_choice', '')).lower() in ('true', '1', 'yes')
-                        is_prime = str(row.get('is_prime', '')).lower() in ('true', '1', 'yes')
-                        climate_friendly = str(row.get('climate_pledge_friendly', '')).lower() in ('true', '1', 'yes')
-                        
-                        # Create combined text for embedding
-                        combined_text = f"{product_title}. {category}".strip()
+                        # Create combined text for embedding with more context
+                        combined_text = f"{product_title}. {category}. {description}".strip()
                         
                         doc = {
                             "asin": asin,
                             "product_title": product_title,
-                            "product_price": row.get('product_price', ''),
-                            "product_original_price": row.get('product_original_price', ''),
+                            "description": description,
+                            "product_price": product_price,
                             "currency": row.get('currency', 'USD'),
                             "product_star_rating": star_rating,
                             "product_num_ratings": num_ratings,
-                            "product_url": row.get('product_url', ''),
-                            "product_photo": row.get('product_photo', ''),
-                            "product_num_offers": num_offers,
-                            "product_availability": row.get('product_availability', ''),
-                            "is_best_seller": is_best_seller,
-                            "is_amazon_choice": is_amazon_choice,
-                            "is_prime": is_prime,
-                            "climate_pledge_friendly": climate_friendly,
-                            "sales_volume": row.get('sales_volume', ''),
+                            "product_url": row.get('url', ''),
+                            "product_photo": image_url,
+                            "brand": row.get('brandName', ''),
                             "category": category,
+                            "in_stock": in_stock,
+                            "color": row.get('color', ''),
+                            "size": row.get('size', ''),
                             "combined_text": combined_text
                         }
                         
