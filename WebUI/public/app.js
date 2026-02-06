@@ -42,6 +42,12 @@ function onDatasetChange() {
     const dataset = document.getElementById('dataset-select').value;
     const config = DATASET_CONFIG[dataset];
     
+    // Safety check - if dataset not found, default to msmarco
+    if (!config) {
+        console.warn('Unknown dataset:', dataset);
+        return;
+    }
+    
     // Update index name placeholder
     document.getElementById('index-name').value = config.defaultIndex;
     
