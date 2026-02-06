@@ -144,6 +144,14 @@ class LoadConfig(BaseModel):
     embedding_batch_size: int = 32
 
 
+class ESCILoadConfig(BaseModel):
+    index_name: str = "products"
+    max_documents: int | None = None
+    batch_size: int = 500
+    embedding_batch_size: int = 32
+    locale: str = "us"  # us, es, jp
+
+
 class ChunkConfig(BaseModel):
     text: str
     chunk_size: int = 512
@@ -706,6 +714,217 @@ def hybrid_search(request: HybridSearchRequest):
     except Exception as e:
         logger.error(f"Error in hybrid search: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def load_esci_background(config: ESCILoadConfig):
+    """Background task to load ESCI (Amazon Shopping Queries) dataset with embeddings."""
+    global loading_status
+    
+    try:
+        loading_status["is_loading"] = True
+        loading_status["message"] = "Initializing ESCI dataset load..."
+        loading_status["progress"] = 0
+        
+        es = get_es_client()
+        
+        # Pre-load embedding model
+        loading_status["message"] = "Loading embedding model..."
+        logger.info("Loading embedding model...")
+        model = get_embedding_model()
+        
+        # Create index with product mapping
+        loading_status["message"] = "Creating product index with vector mapping..."
+        index_mapping = {
+            "mappings": {
+                "properties": {
+                    "product_id": {"type": "keyword"},
+                    "product_title": {"type": "text", "analyzer": "standard"},
+                    "product_description": {"type": "text", "analyzer": "standard"},
+                    "product_bullet_point": {"type": "text", "analyzer": "standard"},
+                    "product_brand": {"type": "keyword"},
+                    "product_color": {"type": "keyword"},
+                    "product_locale": {"type": "keyword"},
+                    "embedding": {
+                        "type": "dense_vector",
+                        "dims": EMBEDDING_DIMS,
+                        "index": True,
+                        "similarity": "cosine"
+                    },
+                    "combined_text": {"type": "text", "analyzer": "standard"}
+                }
+            },
+            "settings": {
+                "number_of_shards": 1,
+                "number_of_replicas": 0,
+                "refresh_interval": "30s"
+            }
+        }
+        
+        if es.indices.exists(index=config.index_name):
+            es.indices.delete(index=config.index_name)
+        
+        es.indices.create(index=config.index_name, body=index_mapping)
+        logger.info(f"Created product index: {config.index_name}")
+        
+        # Load ESCI dataset
+        loading_status["message"] = "Loading ESCI dataset from Hugging Face..."
+        logger.info("Loading ESCI dataset...")
+        
+        dataset = load_dataset("spacemanidol/esci", split="train", streaming=True)
+        
+        # Process and index products with embeddings
+        loading_status["message"] = "Processing and embedding products..."
+        
+        batch_texts = []
+        batch_docs = []
+        product_count = 0
+        seen_products = set()  # Avoid duplicates
+        
+        for item in dataset:
+            if config.max_documents and product_count >= config.max_documents:
+                break
+            
+            # Filter by locale if specified
+            product_locale = item.get("product_locale", "us")
+            if config.locale and product_locale != config.locale:
+                continue
+            
+            product_id = item.get("product_id", "")
+            
+            # Skip duplicates
+            if product_id in seen_products:
+                continue
+            seen_products.add(product_id)
+            
+            product_title = item.get("product_title", "") or ""
+            product_description = item.get("product_description", "") or ""
+            product_bullet_point = item.get("product_bullet_point", "") or ""
+            product_brand = item.get("product_brand", "") or ""
+            product_color = item.get("product_color", "") or ""
+            
+            # Create combined text for embedding
+            combined_text = f"{product_title}. {product_brand}. {product_description} {product_bullet_point}".strip()
+            
+            if not combined_text or len(combined_text) < 10:
+                continue
+            
+            doc = {
+                "product_id": product_id,
+                "product_title": product_title,
+                "product_description": product_description,
+                "product_bullet_point": product_bullet_point,
+                "product_brand": product_brand,
+                "product_color": product_color,
+                "product_locale": product_locale,
+                "combined_text": combined_text
+            }
+            
+            batch_texts.append(combined_text[:1000])  # Limit text length for embedding
+            batch_docs.append(doc)
+            product_count += 1
+            
+            # Update progress
+            if product_count % 100 == 0:
+                loading_status["message"] = f"Processing products... {product_count} processed"
+                loading_status["progress"] = product_count
+                loading_status["total"] = config.max_documents or 0
+            
+            # Process batch when full
+            if len(batch_texts) >= config.embedding_batch_size:
+                # Generate embeddings
+                embeddings = model.encode(batch_texts, show_progress_bar=False)
+                
+                # Add embeddings to docs
+                for i, doc in enumerate(batch_docs):
+                    doc["embedding"] = embeddings[i].tolist()
+                
+                # Bulk index
+                actions = []
+                for doc in batch_docs:
+                    actions.append({
+                        "_index": config.index_name,
+                        "_id": doc["product_id"],
+                        "_source": doc
+                    })
+                
+                helpers.bulk(
+                    es,
+                    actions,
+                    chunk_size=config.batch_size,
+                    request_timeout=120,
+                    raise_on_error=False
+                )
+                
+                batch_texts = []
+                batch_docs = []
+        
+        # Process remaining batch
+        if batch_texts:
+            embeddings = model.encode(batch_texts, show_progress_bar=False)
+            for i, doc in enumerate(batch_docs):
+                doc["embedding"] = embeddings[i].tolist()
+            
+            actions = []
+            for doc in batch_docs:
+                actions.append({
+                    "_index": config.index_name,
+                    "_id": doc["product_id"],
+                    "_source": doc
+                })
+            
+            helpers.bulk(
+                es,
+                actions,
+                chunk_size=config.batch_size,
+                request_timeout=120,
+                raise_on_error=False
+            )
+        
+        # Refresh index
+        es.indices.refresh(index=config.index_name)
+        
+        loading_status["message"] = f"Completed! Indexed {product_count} products"
+        loading_status["progress"] = product_count
+        logger.info(f"ESCI indexing complete: {product_count} products")
+        
+    except Exception as e:
+        logger.error(f"Error loading ESCI dataset: {e}")
+        loading_status["message"] = f"Error: {str(e)}"
+    finally:
+        loading_status["is_loading"] = False
+
+
+@app.post("/load/esci")
+def load_esci(config: ESCILoadConfig, background_tasks: BackgroundTasks):
+    """
+    Load ESCI (Amazon Shopping Queries) dataset into Elasticsearch.
+    
+    This runs as a background task. Use /status to check progress.
+    """
+    global loading_status
+    
+    if loading_status["is_loading"]:
+        raise HTTPException(
+            status_code=409,
+            detail="A loading operation is already in progress"
+        )
+    
+    loading_status = {
+        "is_loading": True,
+        "progress": 0,
+        "total": config.max_documents or 0,
+        "message": "Starting ESCI dataset load..."
+    }
+    
+    background_tasks.add_task(load_esci_background, config)
+    
+    return {
+        "status": "started",
+        "message": "ESCI product data loading started in background",
+        "index_name": config.index_name,
+        "max_documents": config.max_documents,
+        "locale": config.locale
+    }
 
 
 if __name__ == "__main__":

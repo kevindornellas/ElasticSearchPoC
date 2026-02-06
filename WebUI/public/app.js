@@ -1,5 +1,5 @@
 // Configuration - DataLoader service endpoint (stored in localStorage)
-const DEFAULT_API_URL = '192.168.86.157:8000';
+const DEFAULT_API_URL = 'http://192.168.86.151:8000';
 
 function getApiBaseUrl() {
     return localStorage.getItem('apiBaseUrl') || DEFAULT_API_URL;
@@ -12,6 +12,45 @@ function setApiBaseUrl(url) {
 let statusCheckInterval = null;
 let isLoading = false;
 
+// Dataset configuration
+const DATASET_CONFIG = {
+    msmarco: {
+        name: 'MS MARCO',
+        defaultIndex: 'msmarco',
+        endpoint: '/load/msmarco',
+        showChunking: true,
+        showLocale: false
+    },
+    esci: {
+        name: 'Amazon ESCI',
+        defaultIndex: 'products',
+        endpoint: '/load/esci',
+        showChunking: false,
+        showLocale: true
+    }
+};
+
+// Handle dataset selection change
+function onDatasetChange() {
+    const dataset = document.getElementById('dataset-select').value;
+    const config = DATASET_CONFIG[dataset];
+    
+    // Update index name placeholder
+    document.getElementById('index-name').value = config.defaultIndex;
+    
+    // Show/hide chunking options
+    const chunkRow = document.querySelector('.chunk-options');
+    if (chunkRow) {
+        chunkRow.style.display = config.showChunking ? 'flex' : 'none';
+    }
+    
+    // Show/hide locale selector
+    const localeGroup = document.getElementById('locale-group');
+    if (localeGroup) {
+        localeGroup.style.display = config.showLocale ? 'block' : 'none';
+    }
+}
+
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
     // Load saved API URL into input field
@@ -19,6 +58,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (apiUrlInput) {
         apiUrlInput.value = getApiBaseUrl();
     }
+    
+    // Initialize dataset selector
+    onDatasetChange();
     
     checkHealth();
     loadIndices();
@@ -172,18 +214,18 @@ async function preloadModel() {
     }
 }
 
-// Load MS MARCO data
+// Load dataset (MS MARCO or ESCI)
 async function loadData() {
     if (isLoading) {
         showToast('A loading operation is already in progress', 'warning');
         return;
     }
     
-    const indexName = document.getElementById('index-name').value || 'msmarco';
+    const dataset = document.getElementById('dataset-select').value;
+    const datasetConfig = DATASET_CONFIG[dataset];
+    const indexName = document.getElementById('index-name').value || datasetConfig.defaultIndex;
     const maxDocs = parseInt(document.getElementById('max-docs').value) || null;
     const batchSize = parseInt(document.getElementById('batch-size').value) || 500;
-    const chunkSize = parseInt(document.getElementById('chunk-size').value) || 512;
-    const chunkOverlap = parseInt(document.getElementById('chunk-overlap').value) || 50;
     const embeddingBatch = parseInt(document.getElementById('embedding-batch').value) || 32;
     
     const loadBtn = document.getElementById('load-btn');
@@ -194,12 +236,9 @@ async function loadData() {
         loadBtn.innerHTML = '⏳ Starting...';
         progressContainer.style.display = 'block';
         
-        const config = {
+        let config = {
             index_name: indexName,
-            dataset_split: 'train',
             batch_size: batchSize,
-            chunk_size: chunkSize,
-            chunk_overlap: chunkOverlap,
             embedding_batch_size: embeddingBatch
         };
         
@@ -207,13 +246,22 @@ async function loadData() {
             config.max_documents = maxDocs;
         }
         
-        await apiCall('/load/msmarco', {
+        // Add dataset-specific config
+        if (dataset === 'msmarco') {
+            config.dataset_split = 'train';
+            config.chunk_size = parseInt(document.getElementById('chunk-size').value) || 512;
+            config.chunk_overlap = parseInt(document.getElementById('chunk-overlap').value) || 50;
+        } else if (dataset === 'esci') {
+            config.locale = document.getElementById('locale-select').value || 'us';
+        }
+        
+        await apiCall(datasetConfig.endpoint, {
             method: 'POST',
             body: JSON.stringify(config)
         });
         
         isLoading = true;
-        showToast('Data loading with embeddings started!', 'success');
+        showToast(`${datasetConfig.name} data loading started!`, 'success');
         
         // Start polling for status
         statusCheckInterval = setInterval(checkLoadingStatus, 2000);

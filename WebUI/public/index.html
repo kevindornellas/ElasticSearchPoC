@@ -58,8 +58,25 @@
             <h2>Data Operations</h2>
             
             <div class="action-card">
-                <h3>📥 Load MS MARCO Dataset</h3>
-                <p>Download and index the MS MARCO dataset from Hugging Face into Elasticsearch.</p>
+                <h3>📥 Load Dataset</h3>
+                <p>Download and index a dataset from Hugging Face into Elasticsearch.</p>
+                
+                <div class="form-group">
+                    <label for="dataset-select">Dataset:</label>
+                    <select id="dataset-select" onchange="onDatasetChange()">
+                        <option value="msmarco">MS MARCO (Q&A passages)</option>
+                        <option value="esci">Amazon ESCI (Product search)</option>
+                    </select>
+                </div>
+                
+                <div class="form-group" id="locale-group" style="display: none;">
+                    <label for="locale-select">Locale:</label>
+                    <select id="locale-select">
+                        <option value="us">US (English)</option>
+                        <option value="es">ES (Spanish)</option>
+                        <option value="jp">JP (Japanese)</option>
+                    </select>
+                </div>
                 
                 <div class="form-group">
                     <label for="index-name">Index Name:</label>
@@ -71,7 +88,7 @@
                     <input type="number" id="max-docs" value="1000" min="0" placeholder="Leave empty for all">
                 </div>
                 
-                <div class="form-row">
+                <div class="form-row chunk-options">
                     <div class="form-group">
                         <label for="chunk-size">Chunk Size:</label>
                         <input type="number" id="chunk-size" value="512" min="100" max="2000">
