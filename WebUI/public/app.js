@@ -27,6 +27,13 @@ const DATASET_CONFIG = {
         endpoint: '/load/esci',
         showChunking: false,
         showLocale: true
+    },
+    'product-search': {
+        name: 'Product Search Corpus',
+        defaultIndex: 'product-corpus',
+        endpoint: '/load/product-search',
+        showChunking: false,
+        showLocale: false
     }
 };
 

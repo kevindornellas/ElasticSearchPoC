@@ -152,6 +152,13 @@ class ESCILoadConfig(BaseModel):
     locale: str = "us"  # us, es, jp
 
 
+class ProductSearchConfig(BaseModel):
+    index_name: str = "product-corpus"
+    max_documents: int | None = None
+    batch_size: int = 500
+    embedding_batch_size: int = 32
+
+
 class ChunkConfig(BaseModel):
     text: str
     chunk_size: int = 512
@@ -924,6 +931,193 @@ def load_esci(config: ESCILoadConfig, background_tasks: BackgroundTasks):
         "index_name": config.index_name,
         "max_documents": config.max_documents,
         "locale": config.locale
+    }
+
+
+def load_product_search_background(config: ProductSearchConfig):
+    """Background task to load Product Search Corpus dataset with embeddings."""
+    global loading_status
+    
+    try:
+        loading_status["is_loading"] = True
+        loading_status["message"] = "Initializing Product Search Corpus load..."
+        loading_status["progress"] = 0
+        
+        es = get_es_client()
+        
+        # Pre-load embedding model
+        loading_status["message"] = "Loading embedding model..."
+        logger.info("Loading embedding model...")
+        model = get_embedding_model()
+        
+        # Create index with product mapping
+        loading_status["message"] = "Creating product index with vector mapping..."
+        index_mapping = {
+            "mappings": {
+                "properties": {
+                    "doc_id": {"type": "keyword"},
+                    "title": {"type": "text", "analyzer": "standard"},
+                    "text": {"type": "text", "analyzer": "standard"},
+                    "embedding": {
+                        "type": "dense_vector",
+                        "dims": EMBEDDING_DIMS,
+                        "index": True,
+                        "similarity": "cosine"
+                    },
+                    "combined_text": {"type": "text", "analyzer": "standard"}
+                }
+            },
+            "settings": {
+                "number_of_shards": 1,
+                "number_of_replicas": 0,
+                "refresh_interval": "30s"
+            }
+        }
+        
+        if es.indices.exists(index=config.index_name):
+            es.indices.delete(index=config.index_name)
+        
+        es.indices.create(index=config.index_name, body=index_mapping)
+        logger.info(f"Created product index: {config.index_name}")
+        
+        # Load Product Search Corpus dataset
+        loading_status["message"] = "Loading Product Search Corpus from Hugging Face..."
+        logger.info("Loading Product Search Corpus dataset...")
+        
+        dataset = load_dataset("spacemanidol/product-search-corpus", split="train", streaming=True)
+        
+        # Process and index products with embeddings
+        loading_status["message"] = "Processing and embedding products..."
+        
+        batch_texts = []
+        batch_docs = []
+        product_count = 0
+        
+        for item in dataset:
+            if config.max_documents and product_count >= config.max_documents:
+                break
+            
+            doc_id = item.get("docid", "") or item.get("doc_id", "") or str(product_count)
+            title = item.get("title", "") or ""
+            text = item.get("text", "") or item.get("body", "") or ""
+            
+            # Create combined text for embedding
+            combined_text = f"{title}. {text}".strip()
+            
+            if not combined_text or len(combined_text) < 10:
+                continue
+            
+            doc = {
+                "doc_id": doc_id,
+                "title": title,
+                "text": text,
+                "combined_text": combined_text
+            }
+            
+            batch_texts.append(combined_text[:1000])  # Limit text length for embedding
+            batch_docs.append(doc)
+            product_count += 1
+            
+            # Update progress
+            if product_count % 100 == 0:
+                loading_status["message"] = f"Processing products... {product_count} processed"
+                loading_status["progress"] = product_count
+                loading_status["total"] = config.max_documents or 0
+            
+            # Process batch when full
+            if len(batch_texts) >= config.embedding_batch_size:
+                # Generate embeddings
+                embeddings = model.encode(batch_texts, show_progress_bar=False)
+                
+                # Add embeddings to docs
+                for i, doc in enumerate(batch_docs):
+                    doc["embedding"] = embeddings[i].tolist()
+                
+                # Bulk index
+                actions = []
+                for doc in batch_docs:
+                    actions.append({
+                        "_index": config.index_name,
+                        "_id": doc["doc_id"],
+                        "_source": doc
+                    })
+                
+                helpers.bulk(
+                    es,
+                    actions,
+                    chunk_size=config.batch_size,
+                    request_timeout=120,
+                    raise_on_error=False
+                )
+                
+                batch_texts = []
+                batch_docs = []
+        
+        # Process remaining batch
+        if batch_texts:
+            embeddings = model.encode(batch_texts, show_progress_bar=False)
+            for i, doc in enumerate(batch_docs):
+                doc["embedding"] = embeddings[i].tolist()
+            
+            actions = []
+            for doc in batch_docs:
+                actions.append({
+                    "_index": config.index_name,
+                    "_id": doc["doc_id"],
+                    "_source": doc
+                })
+            
+            helpers.bulk(
+                es,
+                actions,
+                chunk_size=config.batch_size,
+                request_timeout=120,
+                raise_on_error=False
+            )
+        
+        # Refresh index
+        es.indices.refresh(index=config.index_name)
+        
+        loading_status["message"] = f"Completed! Indexed {product_count} products"
+        loading_status["progress"] = product_count
+        logger.info(f"Product Search Corpus indexing complete: {product_count} products")
+        
+    except Exception as e:
+        logger.error(f"Error loading Product Search Corpus: {e}")
+        loading_status["message"] = f"Error: {str(e)}"
+    finally:
+        loading_status["is_loading"] = False
+
+
+@app.post("/load/product-search")
+def load_product_search(config: ProductSearchConfig, background_tasks: BackgroundTasks):
+    """
+    Load Product Search Corpus dataset into Elasticsearch.
+    
+    This runs as a background task. Use /status to check progress.
+    """
+    global loading_status
+    
+    if loading_status["is_loading"]:
+        raise HTTPException(
+            status_code=409,
+            detail="A loading operation is already in progress"
+        )
+    
+    loading_status = {
+        "is_loading": True,
+        "progress": 0,
+        "total": config.max_documents or 0,
+        "message": "Starting Product Search Corpus load..."
+    }
+    
+    background_tasks.add_task(load_product_search_background, config)
+    
+    return {
+        "status": "started",
+        "message": "Product Search Corpus loading started in background",
+        "index_name": config.index_name,
+        "max_documents": config.max_documents
     }
 
 
