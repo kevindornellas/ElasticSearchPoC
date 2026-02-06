@@ -1,7 +1,5 @@
-// Configuration - will be updated based on environment
-const API_BASE_URL = window.location.hostname === 'localhost' 
-    ? 'http://localhost:8000'
-    : `http://${window.location.hostname}:30800`;
+// Configuration - DataLoader service endpoint
+const API_BASE_URL = 'http://192.168.86.28:30800';
 
 let statusCheckInterval = null;
 let isLoading = false;
