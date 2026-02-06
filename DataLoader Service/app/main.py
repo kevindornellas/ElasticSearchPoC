@@ -1184,7 +1184,7 @@ def load_home_depot_background(config: HomeDepotConfig):
         loading_status["message"] = "Loading Home Depot dataset from Hugging Face..."
         logger.info("Loading Home Depot dataset...")
         
-        dataset = load_dataset("jinaai/home_depot_product_search", split="train", streaming=True)
+        dataset = load_dataset("florentgbelidji/home-depot-product-search", split="train", streaming=True)
         
         # Process and index products with embeddings
         loading_status["message"] = "Processing and embedding products..."
