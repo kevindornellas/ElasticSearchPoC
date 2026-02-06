@@ -17,7 +17,7 @@ spec:
       nodeName: kevin-ubuntu
       containers:
         - name: elasticsearch-webui
-          image: localhost:32000/elasticsearch-webui:latest
+          image: elasticsearch-webui:latest
           imagePullPolicy: Never  # Use local image for microk8s
           ports:
             - containerPort: 80
