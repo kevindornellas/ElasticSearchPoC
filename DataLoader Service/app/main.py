@@ -751,6 +751,7 @@ def load_esci_background(config: ESCILoadConfig):
                     "product_brand": {"type": "keyword"},
                     "product_color": {"type": "keyword"},
                     "product_locale": {"type": "keyword"},
+                    "product_class": {"type": "keyword"},
                     "embedding": {
                         "type": "dense_vector",
                         "dims": EMBEDDING_DIMS,
@@ -773,11 +774,12 @@ def load_esci_background(config: ESCILoadConfig):
         es.indices.create(index=config.index_name, body=index_mapping)
         logger.info(f"Created product index: {config.index_name}")
         
-        # Load ESCI dataset
-        loading_status["message"] = "Loading ESCI dataset from Hugging Face..."
-        logger.info("Loading ESCI dataset...")
+        # Load ESCI product catalog
+        loading_status["message"] = "Loading Amazon ESCI product catalog from Hugging Face..."
+        logger.info("Loading ESCI product catalog...")
         
-        dataset = load_dataset("spacemanidol/esci", split="train", streaming=True)
+        # Load only the product catalog (no queries/labels)
+        dataset = load_dataset("tasksource/esci", "product_catalogue", split="train", streaming=True)
         
         # Process and index products with embeddings
         loading_status["message"] = "Processing and embedding products..."
@@ -808,8 +810,9 @@ def load_esci_background(config: ESCILoadConfig):
             product_bullet_point = item.get("product_bullet_point", "") or ""
             product_brand = item.get("product_brand", "") or ""
             product_color = item.get("product_color", "") or ""
+            product_class = item.get("product_class", "") or ""
             
-            # Create combined text for embedding
+            # Create combined text for embedding (product catalog info only)
             combined_text = f"{product_title}. {product_brand}. {product_description} {product_bullet_point}".strip()
             
             if not combined_text or len(combined_text) < 10:
@@ -822,6 +825,7 @@ def load_esci_background(config: ESCILoadConfig):
                 "product_bullet_point": product_bullet_point,
                 "product_brand": product_brand,
                 "product_color": product_color,
+                "product_class": product_class,
                 "product_locale": product_locale,
                 "combined_text": combined_text
             }
