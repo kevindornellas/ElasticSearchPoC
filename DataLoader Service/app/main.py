@@ -159,8 +159,22 @@ class ProductSearchConfig(BaseModel):
     embedding_batch_size: int = 32
 
 
+class WayfairConfig(BaseModel):
+    index_name: str = "wayfair-products"
+    max_documents: int | None = None
+    batch_size: int = 500
+    embedding_batch_size: int = 32
+
+
 class HomeDepotConfig(BaseModel):
-    index_name: str = "home-depot"
+    index_name: str = "home-depot-products"
+    max_documents: int | None = None
+    batch_size: int = 500
+    embedding_batch_size: int = 32
+
+
+class WalmartConfig(BaseModel):
+    index_name: str = "walmart-products"
     max_documents: int | None = None
     batch_size: int = 500
     embedding_batch_size: int = 32
@@ -1132,6 +1146,215 @@ def load_product_search(config: ProductSearchConfig, background_tasks: Backgroun
     }
 
 
+def load_wayfair_background(config: WayfairConfig):
+    """Background task to load Wayfair WANDS Product Search dataset with embeddings."""
+    global loading_status
+    
+    try:
+        loading_status["is_loading"] = True
+        loading_status["message"] = "Initializing Wayfair WANDS dataset load..."
+        loading_status["progress"] = 0
+        
+        es = get_es_client()
+        
+        # Pre-load embedding model
+        loading_status["message"] = "Loading embedding model..."
+        logger.info("Loading embedding model...")
+        model = get_embedding_model()
+        
+        # Create index with Wayfair product mapping
+        loading_status["message"] = "Creating Wayfair product index..."
+        index_mapping = {
+            "mappings": {
+                "properties": {
+                    "product_id": {"type": "keyword"},
+                    "product_name": {"type": "text", "analyzer": "standard"},
+                    "product_class": {"type": "keyword"},
+                    "category_hierarchy": {"type": "text", "analyzer": "standard"},
+                    "product_description": {"type": "text", "analyzer": "standard"},
+                    "product_features": {"type": "text", "analyzer": "standard"},
+                    "average_rating": {"type": "float"},
+                    "review_count": {"type": "integer"},
+                    "embedding": {
+                        "type": "dense_vector",
+                        "dims": EMBEDDING_DIMS,
+                        "index": True,
+                        "similarity": "cosine"
+                    },
+                    "combined_text": {"type": "text", "analyzer": "standard"}
+                }
+            },
+            "settings": {
+                "number_of_shards": 1,
+                "number_of_replicas": 0,
+                "refresh_interval": "30s"
+            }
+        }
+        
+        if es.indices.exists(index=config.index_name):
+            es.indices.delete(index=config.index_name)
+        
+        es.indices.create(index=config.index_name, body=index_mapping)
+        logger.info(f"Created Wayfair index: {config.index_name}")
+        
+        # Load Wayfair WANDS dataset from Hugging Face
+        loading_status["message"] = "Loading Wayfair WANDS dataset from Hugging Face..."
+        logger.info("Loading Wayfair WANDS dataset...")
+        
+        dataset = load_dataset("wayfair/wands", "products", split="test", streaming=True)
+        
+        # Process and index products with embeddings
+        loading_status["message"] = "Processing and embedding products..."
+        
+        batch_texts = []
+        batch_docs = []
+        product_count = 0
+        seen_products = set()  # Avoid duplicates
+        
+        for item in dataset:
+            if config.max_documents and product_count >= config.max_documents:
+                break
+            
+            product_id = str(item.get("product_id", "") or product_count)
+            
+            # Skip duplicates
+            if product_id in seen_products:
+                continue
+            seen_products.add(product_id)
+            
+            product_name = item.get("product_name", "") or ""
+            product_class = item.get("product_class", "") or ""
+            category_hierarchy = item.get("category_hierarchy", "") or ""
+            product_description = item.get("product_description", "") or ""
+            product_features = item.get("product_features", "") or ""
+            average_rating = item.get("average_rating", 0) or 0
+            review_count = item.get("review_count", 0) or 0
+            
+            # Create combined text for embedding
+            combined_text = f"{product_name}. {product_class}. {category_hierarchy}. {product_description} {product_features}".strip()
+            
+            if not combined_text or len(combined_text) < 10:
+                continue
+            
+            doc = {
+                "product_id": product_id,
+                "product_name": product_name,
+                "product_class": product_class,
+                "category_hierarchy": category_hierarchy,
+                "product_description": product_description,
+                "product_features": product_features,
+                "average_rating": float(average_rating) if average_rating else 0.0,
+                "review_count": int(review_count) if review_count else 0,
+                "combined_text": combined_text
+            }
+            
+            batch_texts.append(combined_text[:1000])  # Limit text length for embedding
+            batch_docs.append(doc)
+            product_count += 1
+            
+            # Update progress
+            if product_count % 100 == 0:
+                loading_status["message"] = f"Processing products... {product_count} processed"
+                loading_status["progress"] = product_count
+                loading_status["total"] = config.max_documents or 0
+            
+            # Process batch when full
+            if len(batch_texts) >= config.embedding_batch_size:
+                # Generate embeddings
+                embeddings = model.encode(batch_texts, show_progress_bar=False)
+                
+                # Add embeddings to docs
+                for i, doc in enumerate(batch_docs):
+                    doc["embedding"] = embeddings[i].tolist()
+                
+                # Bulk index
+                actions = []
+                for doc in batch_docs:
+                    actions.append({
+                        "_index": config.index_name,
+                        "_id": doc["product_id"],
+                        "_source": doc
+                    })
+                
+                helpers.bulk(
+                    es,
+                    actions,
+                    chunk_size=config.batch_size,
+                    request_timeout=120,
+                    raise_on_error=False
+                )
+                
+                batch_texts = []
+                batch_docs = []
+        
+        # Process remaining batch
+        if batch_texts:
+            embeddings = model.encode(batch_texts, show_progress_bar=False)
+            for i, doc in enumerate(batch_docs):
+                doc["embedding"] = embeddings[i].tolist()
+            
+            actions = []
+            for doc in batch_docs:
+                actions.append({
+                    "_index": config.index_name,
+                    "_id": doc["product_id"],
+                    "_source": doc
+                })
+            
+            helpers.bulk(
+                es,
+                actions,
+                chunk_size=config.batch_size,
+                request_timeout=120,
+                raise_on_error=False
+            )
+        
+        # Refresh index
+        es.indices.refresh(index=config.index_name)
+        
+        loading_status["message"] = f"Completed! Indexed {product_count} products"
+        loading_status["progress"] = product_count
+        logger.info(f"Wayfair WANDS indexing complete: {product_count} products")
+        
+    except Exception as e:
+        logger.error(f"Error loading Wayfair WANDS dataset: {e}")
+        loading_status["message"] = f"Error: {str(e)}"
+    finally:
+        loading_status["is_loading"] = False
+
+
+@app.post("/load/wayfair")
+def load_wayfair(config: WayfairConfig, background_tasks: BackgroundTasks):
+    """
+    Load Wayfair WANDS Product Search dataset into Elasticsearch.
+    
+    This runs as a background task. Use /status to check progress.
+    """
+    global loading_status
+    
+    if loading_status["is_loading"]:
+        raise HTTPException(
+            status_code=409,
+            detail="A loading operation is already in progress"
+        )
+    
+    loading_status = {
+        "is_loading": True,
+        "progress": 0,
+        "total": config.max_documents or 0,
+        "message": "Starting Wayfair WANDS dataset load..."
+    }
+    
+    background_tasks.add_task(load_wayfair_background, config)
+    
+    return {
+        "status": "started",
+        "message": "Wayfair product loading started in background",
+        "index_name": config.index_name,
+        "max_documents": config.max_documents
+    }
+
+
 def load_home_depot_background(config: HomeDepotConfig):
     """Background task to load Home Depot Product Search dataset with embeddings."""
     global loading_status
@@ -1156,8 +1379,8 @@ def load_home_depot_background(config: HomeDepotConfig):
                     "product_uid": {"type": "keyword"},
                     "product_title": {"type": "text", "analyzer": "standard"},
                     "product_description": {"type": "text", "analyzer": "standard"},
-                    "attributes": {"type": "text", "analyzer": "standard"},
-                    "brand": {"type": "keyword"},
+                    "search_term": {"type": "text", "analyzer": "standard"},
+                    "relevance": {"type": "float"},
                     "embedding": {
                         "type": "dense_vector",
                         "dims": EMBEDDING_DIMS,
@@ -1184,7 +1407,7 @@ def load_home_depot_background(config: HomeDepotConfig):
         loading_status["message"] = "Loading Home Depot dataset from Hugging Face..."
         logger.info("Loading Home Depot dataset...")
         
-        dataset = load_dataset("florentgbelidji/home-depot-product-search", split="train", streaming=True)
+        dataset = load_dataset("TheFusion21/home_depot_product_search_relevance", split="train", streaming=True)
         
         # Process and index products with embeddings
         loading_status["message"] = "Processing and embedding products..."
@@ -1192,30 +1415,26 @@ def load_home_depot_background(config: HomeDepotConfig):
         batch_texts = []
         batch_docs = []
         product_count = 0
-        seen_products = set()  # Avoid duplicates
+        seen_products = set()  # Avoid duplicates - index unique products only
         
         for item in dataset:
             if config.max_documents and product_count >= config.max_documents:
                 break
             
-            product_uid = str(item.get("product_uid", "") or item.get("product_id", "") or product_count)
+            product_uid = str(item.get("product_uid", "") or product_count)
             
-            # Skip duplicates
+            # Skip duplicates (same product may appear with different search terms)
             if product_uid in seen_products:
                 continue
             seen_products.add(product_uid)
             
             product_title = item.get("product_title", "") or ""
             product_description = item.get("product_description", "") or ""
-            attributes = item.get("attributes", "") or item.get("product_attributes", "") or ""
-            brand = item.get("brand", "") or ""
-            
-            # Handle attributes if it's a dict/list
-            if isinstance(attributes, (dict, list)):
-                attributes = str(attributes)
+            search_term = item.get("search_term", "") or ""
+            relevance = item.get("relevance", 0) or 0
             
             # Create combined text for embedding
-            combined_text = f"{product_title}. {brand}. {product_description} {attributes}".strip()
+            combined_text = f"{product_title}. {product_description}".strip()
             
             if not combined_text or len(combined_text) < 10:
                 continue
@@ -1224,8 +1443,8 @@ def load_home_depot_background(config: HomeDepotConfig):
                 "product_uid": product_uid,
                 "product_title": product_title,
                 "product_description": product_description,
-                "attributes": attributes,
-                "brand": brand,
+                "search_term": search_term,
+                "relevance": float(relevance) if relevance else 0.0,
                 "combined_text": combined_text
             }
             
@@ -1331,6 +1550,261 @@ def load_home_depot(config: HomeDepotConfig, background_tasks: BackgroundTasks):
     return {
         "status": "started",
         "message": "Home Depot product loading started in background",
+        "index_name": config.index_name,
+        "max_documents": config.max_documents
+    }
+
+
+def load_walmart_background(config: WalmartConfig):
+    """Background task to load Walmart Product dataset with embeddings."""
+    global loading_status
+    
+    try:
+        loading_status["is_loading"] = True
+        loading_status["message"] = "Initializing Walmart dataset load..."
+        loading_status["progress"] = 0
+        
+        es = get_es_client()
+        
+        # Pre-load embedding model
+        loading_status["message"] = "Loading embedding model..."
+        logger.info("Loading embedding model...")
+        model = get_embedding_model()
+        
+        # Create index with Walmart product mapping
+        loading_status["message"] = "Creating Walmart product index..."
+        index_mapping = {
+            "mappings": {
+                "properties": {
+                    "product_id": {"type": "keyword"},
+                    "product_name": {"type": "text", "analyzer": "standard"},
+                    "product_description": {"type": "text", "analyzer": "standard"},
+                    "category": {"type": "keyword"},
+                    "subcategory": {"type": "keyword"},
+                    "brand": {"type": "keyword"},
+                    "price": {"type": "float"},
+                    "rating": {"type": "float"},
+                    "embedding": {
+                        "type": "dense_vector",
+                        "dims": EMBEDDING_DIMS,
+                        "index": True,
+                        "similarity": "cosine"
+                    },
+                    "combined_text": {"type": "text", "analyzer": "standard"}
+                }
+            },
+            "settings": {
+                "number_of_shards": 1,
+                "number_of_replicas": 0,
+                "refresh_interval": "30s"
+            }
+        }
+        
+        if es.indices.exists(index=config.index_name):
+            es.indices.delete(index=config.index_name)
+        
+        es.indices.create(index=config.index_name, body=index_mapping)
+        logger.info(f"Created Walmart index: {config.index_name}")
+        
+        # Load Walmart dataset from Hugging Face (community mirror of Kaggle data)
+        loading_status["message"] = "Loading Walmart dataset from Hugging Face..."
+        logger.info("Loading Walmart dataset...")
+        
+        # Try multiple possible HuggingFace mirrors of the Walmart Kaggle dataset
+        dataset = None
+        dataset_sources = [
+            "alexlekov/walmart-products",
+            "maharshipandya/walmart-products", 
+            "ruchi798/walmart-retail-dataset"
+        ]
+        
+        for source in dataset_sources:
+            try:
+                dataset = load_dataset(source, split="train", streaming=True)
+                logger.info(f"Successfully loaded Walmart dataset from: {source}")
+                break
+            except Exception as e:
+                logger.warning(f"Could not load from {source}: {e}")
+                continue
+        
+        if dataset is None:
+            raise Exception(
+                "Walmart dataset not available on HuggingFace. "
+                "Please download from Kaggle and use a CSV upload endpoint, "
+                "or check for updated HuggingFace mirrors."
+            )
+        
+        # Process and index products with embeddings
+        loading_status["message"] = "Processing and embedding products..."
+        
+        batch_texts = []
+        batch_docs = []
+        product_count = 0
+        seen_products = set()
+        
+        for item in dataset:
+            if config.max_documents and product_count >= config.max_documents:
+                break
+            
+            # Handle various possible field names from different dataset versions
+            product_id = str(
+                item.get("Product ID", "") or 
+                item.get("product_id", "") or 
+                item.get("id", "") or 
+                product_count
+            )
+            
+            # Skip duplicates
+            if product_id in seen_products:
+                continue
+            seen_products.add(product_id)
+            
+            product_name = (
+                item.get("Product Name", "") or 
+                item.get("product_name", "") or 
+                item.get("name", "") or 
+                item.get("title", "") or ""
+            )
+            product_description = (
+                item.get("Description", "") or 
+                item.get("product_description", "") or 
+                item.get("description", "") or ""
+            )
+            category = (
+                item.get("Category", "") or 
+                item.get("category", "") or 
+                item.get("department", "") or ""
+            )
+            subcategory = (
+                item.get("Sub-Category", "") or 
+                item.get("subcategory", "") or 
+                item.get("sub_category", "") or ""
+            )
+            brand = (
+                item.get("Brand", "") or 
+                item.get("brand", "") or ""
+            )
+            price = item.get("Price", 0) or item.get("price", 0) or 0
+            rating = item.get("Rating", 0) or item.get("rating", 0) or 0
+            
+            # Create combined text for embedding
+            combined_text = f"{product_name}. {brand}. {category} {subcategory}. {product_description}".strip()
+            
+            if not combined_text or len(combined_text) < 10:
+                continue
+            
+            doc = {
+                "product_id": product_id,
+                "product_name": product_name,
+                "product_description": product_description,
+                "category": category,
+                "subcategory": subcategory,
+                "brand": brand,
+                "price": float(price) if price else 0.0,
+                "rating": float(rating) if rating else 0.0,
+                "combined_text": combined_text
+            }
+            
+            batch_texts.append(combined_text[:1000])
+            batch_docs.append(doc)
+            product_count += 1
+            
+            # Update progress
+            if product_count % 100 == 0:
+                loading_status["message"] = f"Processing products... {product_count} processed"
+                loading_status["progress"] = product_count
+                loading_status["total"] = config.max_documents or 0
+            
+            # Process batch when full
+            if len(batch_texts) >= config.embedding_batch_size:
+                embeddings = model.encode(batch_texts, show_progress_bar=False)
+                
+                for i, doc in enumerate(batch_docs):
+                    doc["embedding"] = embeddings[i].tolist()
+                
+                actions = []
+                for doc in batch_docs:
+                    actions.append({
+                        "_index": config.index_name,
+                        "_id": doc["product_id"],
+                        "_source": doc
+                    })
+                
+                helpers.bulk(
+                    es,
+                    actions,
+                    chunk_size=config.batch_size,
+                    request_timeout=120,
+                    raise_on_error=False
+                )
+                
+                batch_texts = []
+                batch_docs = []
+        
+        # Process remaining batch
+        if batch_texts:
+            embeddings = model.encode(batch_texts, show_progress_bar=False)
+            for i, doc in enumerate(batch_docs):
+                doc["embedding"] = embeddings[i].tolist()
+            
+            actions = []
+            for doc in batch_docs:
+                actions.append({
+                    "_index": config.index_name,
+                    "_id": doc["product_id"],
+                    "_source": doc
+                })
+            
+            helpers.bulk(
+                es,
+                actions,
+                chunk_size=config.batch_size,
+                request_timeout=120,
+                raise_on_error=False
+            )
+        
+        # Refresh index
+        es.indices.refresh(index=config.index_name)
+        
+        loading_status["message"] = f"Completed! Indexed {product_count} products"
+        loading_status["progress"] = product_count
+        logger.info(f"Walmart indexing complete: {product_count} products")
+        
+    except Exception as e:
+        logger.error(f"Error loading Walmart dataset: {e}")
+        loading_status["message"] = f"Error: {str(e)}"
+    finally:
+        loading_status["is_loading"] = False
+
+
+@app.post("/load/walmart")
+def load_walmart(config: WalmartConfig, background_tasks: BackgroundTasks):
+    """
+    Load Walmart Product dataset into Elasticsearch.
+    
+    This runs as a background task. Use /status to check progress.
+    Note: Requires a HuggingFace mirror of the Kaggle Walmart dataset.
+    """
+    global loading_status
+    
+    if loading_status["is_loading"]:
+        raise HTTPException(
+            status_code=409,
+            detail="A loading operation is already in progress"
+        )
+    
+    loading_status = {
+        "is_loading": True,
+        "progress": 0,
+        "total": config.max_documents or 0,
+        "message": "Starting Walmart dataset load..."
+    }
+    
+    background_tasks.add_task(load_walmart_background, config)
+    
+    return {
+        "status": "started",
+        "message": "Walmart product loading started in background",
         "index_name": config.index_name,
         "max_documents": config.max_documents
     }
