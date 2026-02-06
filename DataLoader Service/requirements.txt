@@ -6,3 +6,4 @@ pydantic==2.6.1
 sentence-transformers==2.5.1
 torch==2.2.1
 numpy==1.26.4
+requests==2.31.0

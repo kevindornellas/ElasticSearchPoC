@@ -35,24 +35,17 @@ const DATASET_CONFIG = {
         showChunking: false,
         showLocale: false
     },
-    'wayfair': {
-        name: 'Wayfair WANDS',
-        defaultIndex: 'wayfair-products',
-        endpoint: '/load/wayfair',
+    'open-food-facts': {
+        name: 'Open Food Facts',
+        defaultIndex: 'food-products',
+        endpoint: '/load/open-food-facts',
         showChunking: false,
         showLocale: false
     },
-    'home-depot': {
-        name: 'Home Depot',
-        defaultIndex: 'home-depot-products',
-        endpoint: '/load/home-depot',
-        showChunking: false,
-        showLocale: false
-    },
-    'walmart': {
-        name: 'Walmart',
-        defaultIndex: 'walmart-products',
-        endpoint: '/load/walmart',
+    'amazon-best-sellers': {
+        name: 'Amazon Best Sellers',
+        defaultIndex: 'amazon-best-sellers',
+        endpoint: '/load/amazon-best-sellers',
         showChunking: false,
         showLocale: false
     }
