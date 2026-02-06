@@ -34,6 +34,13 @@ const DATASET_CONFIG = {
         endpoint: '/load/product-search',
         showChunking: false,
         showLocale: false
+    },
+    'home-depot': {
+        name: 'Home Depot',
+        defaultIndex: 'home-depot',
+        endpoint: '/load/home-depot',
+        showChunking: false,
+        showLocale: false
     }
 };
 
