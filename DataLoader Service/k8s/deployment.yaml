@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dataloader-service
+  labels:
+    app: dataloader-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dataloader-service
+  template:
+    metadata:
+      labels:
+        app: dataloader-service
+    spec:
+      containers:
+        - name: dataloader-service
+          image: dataloader-service:latest
+          imagePullPolicy: Never  # Use local image for microk8s
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: ELASTICSEARCH_HOST
+              value: "elasticsearch"
+            - name: ELASTICSEARCH_PORT
+              value: "9200"
+            - name: ELASTICSEARCH_INDEX
+              value: "msmarco"
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5

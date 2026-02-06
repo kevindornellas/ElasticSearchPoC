@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Elasticsearch Data Manager</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🔍 Elasticsearch Data Manager</h1>
+            <p class="subtitle">MS MARCO Dataset Loader</p>
+        </header>
+
+        <section class="status-section">
+            <h2>System Status</h2>
+            <div class="status-cards">
+                <div class="status-card" id="es-status">
+                    <div class="status-icon">📊</div>
+                    <div class="status-info">
+                        <h3>Elasticsearch</h3>
+                        <span class="status-badge checking">Checking...</span>
+                    </div>
+                </div>
+                <div class="status-card" id="loader-status">
+                    <div class="status-icon">⚙️</div>
+                    <div class="status-info">
+                        <h3>Data Loader</h3>
+                        <span class="status-badge checking">Checking...</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="indices-section">
+            <h2>Indices</h2>
+            <div class="indices-list" id="indices-list">
+                <p class="loading">Loading indices...</p>
+            </div>
+            <button class="btn btn-refresh" onclick="loadIndices()">🔄 Refresh</button>
+        </section>
+
+        <section class="actions-section">
+            <h2>Data Operations</h2>
+            
+            <div class="action-card">
+                <h3>📥 Load MS MARCO Dataset</h3>
+                <p>Download and index the MS MARCO dataset from Hugging Face into Elasticsearch.</p>
+                
+                <div class="form-group">
+                    <label for="index-name">Index Name:</label>
+                    <input type="text" id="index-name" value="msmarco" placeholder="msmarco">
+                </div>
+                
+                <div class="form-group">
+                    <label for="max-docs">Max Documents (0 = all):</label>
+                    <input type="number" id="max-docs" value="10000" min="0" placeholder="Leave empty for all">
+                </div>
+                
+                <div class="form-group">
+                    <label for="batch-size">Batch Size:</label>
+                    <input type="number" id="batch-size" value="1000" min="100" max="5000">
+                </div>
+                
+                <button class="btn btn-primary" id="load-btn" onclick="loadData()">
+                    📥 Start Loading
+                </button>
+                
+                <div class="progress-container" id="progress-container" style="display: none;">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progress-fill"></div>
+                    </div>
+                    <div class="progress-text" id="progress-text">Initializing...</div>
+                </div>
+            </div>
+
+            <div class="action-card danger">
+                <h3>🗑️ Clear Data</h3>
+                <p>Delete indices from Elasticsearch. This action cannot be undone!</p>
+                
+                <div class="form-group">
+                    <label for="delete-index">Index to Delete:</label>
+                    <select id="delete-index">
+                        <option value="__all__">All Indices</option>
+                    </select>
+                </div>
+                
+                <button class="btn btn-danger" onclick="clearData()">
+                    🗑️ Delete Data
+                </button>
+            </div>
+        </section>
+
+        <section class="search-section">
+            <h2>🔎 Quick Search</h2>
+            <div class="search-box">
+                <input type="text" id="search-query" placeholder="Enter search query...">
+                <select id="search-index">
+                    <option value="msmarco">msmarco</option>
+                </select>
+                <button class="btn btn-primary" onclick="searchData()">Search</button>
+            </div>
+            <div class="search-results" id="search-results"></div>
+        </section>
+
+        <div class="toast-container" id="toast-container"></div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
