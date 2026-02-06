@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: elasticsearch-webui
-          image: elasticsearch-webui:latest
+          image: localhost:32000/elasticsearch-webui:latest
           imagePullPolicy: Never  # Use local image for microk8s
           ports:
             - containerPort: 80

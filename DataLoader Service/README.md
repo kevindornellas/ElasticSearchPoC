@@ -31,12 +31,8 @@ A FastAPI web service for managing Elasticsearch data and loading the MS MARCO d
 # Navigate to the DataLoader Service folder
 cd "DataLoader Service"
 
-# Build the image using microk8s built-in registry
-microk8s ctr image build -t dataloader-service:latest .
-```
-
 Or if using Docker:
-
+```
 ```bash
 docker build -t dataloader-service:latest .
 
@@ -48,22 +44,22 @@ docker save dataloader-service:latest | microk8s ctr image import -
 
 ```bash
 # Make sure Elasticsearch is deployed first
-microk8s kubectl apply -f "../Elastic Search Deployment/elasticsearch-deployment.yaml"
-microk8s kubectl apply -f "../Elastic Search Deployment/elasticsearch-service.yaml"
+kubectl apply -f "../Elastic Search Deployment/elasticsearch-deployment.yaml"
+kubectl apply -f "../Elastic Search Deployment/elasticsearch-service.yaml"
 
 # Wait for Elasticsearch to be ready
-microk8s kubectl wait --for=condition=ready pod -l app=elasticsearch --timeout=120s
+kubectl wait --for=condition=ready pod -l app=elasticsearch --timeout=120s
 
 # Deploy the DataLoader service
-microk8s kubectl apply -f k8s/deployment.yaml
-microk8s kubectl apply -f k8s/service.yaml
+kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/service.yaml
 ```
 
 ### 3. Verify deployment
 
 ```bash
-microk8s kubectl get pods
-microk8s kubectl get services
+kubectl get pods
+kubectl get services
 ```
 
 ## Usage Examples
