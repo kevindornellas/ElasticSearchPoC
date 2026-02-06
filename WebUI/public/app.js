@@ -1,5 +1,5 @@
 // Configuration - DataLoader service endpoint (stored in localStorage)
-const DEFAULT_API_URL = 'http://192.168.86.28:8000';
+const DEFAULT_API_URL = 'http://192.168.86.151:8000';
 
 function getApiBaseUrl() {
     return localStorage.getItem('apiBaseUrl') || DEFAULT_API_URL;
