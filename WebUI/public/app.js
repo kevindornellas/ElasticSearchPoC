@@ -430,14 +430,33 @@ async function searchData() {
                     Found ${formatNumber(result.total)} results using ${searchTypeLabel[searchType] || result.search_type}
                     ${result.model ? ` • Model: ${result.model}` : ''}
                 </p>
-                ${result.hits.map(hit => `
+                ${result.hits.map(hit => {
+                    const source = hit.source;
+                    // Get display text from various possible fields
+                    const displayText = source.text || source.passage_text || source.product_title || 
+                                       source.product_name || source.name || source.title || 
+                                       source.combined_text || 'No title available';
+                    // Get optional description/details
+                    const description = source.description || source.product_description || '';
+                    // Get category if available
+                    const category = source.category || source.product_category || '';
+                    // Get price if available
+                    const price = source.product_price || source.price || '';
+                    // Get rating if available
+                    const rating = source.product_star_rating || source.rating || '';
+                    
+                    return `
                     <div class="search-result-item">
                         <span class="score">Score: ${hit.score.toFixed(4)}</span>
-                        <p class="passage">${escapeHtml(hit.source.text || hit.source.passage_text)}</p>
-                        ${hit.source.query_text ? `<p class="query">Query: ${escapeHtml(hit.source.query_text)}</p>` : ''}
-                        ${hit.source.chunk_index !== undefined ? `<span class="chunk-info">Chunk ${hit.source.chunk_index}</span>` : ''}
+                        <p class="passage">${escapeHtml(displayText)}</p>
+                        ${description ? `<p class="description" style="color: var(--text-secondary); font-size: 0.9em; margin-top: 5px;">${escapeHtml(description.substring(0, 200))}${description.length > 200 ? '...' : ''}</p>` : ''}
+                        ${category ? `<span class="category" style="background: var(--accent-color); color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.75em; margin-right: 8px;">${escapeHtml(category)}</span>` : ''}
+                        ${price ? `<span class="price" style="color: var(--success-color); font-weight: bold;">$${escapeHtml(price)}</span>` : ''}
+                        ${rating ? `<span class="rating" style="margin-left: 8px;">⭐ ${rating}</span>` : ''}
+                        ${source.query_text ? `<p class="query">Query: ${escapeHtml(source.query_text)}</p>` : ''}
+                        ${source.chunk_index !== undefined ? `<span class="chunk-info">Chunk ${source.chunk_index}</span>` : ''}
                     </div>
-                `).join('')}
+                `}).join('')}
             `;
         } else {
             resultsContainer.innerHTML = '<div class="no-indices">No results found</div>';
