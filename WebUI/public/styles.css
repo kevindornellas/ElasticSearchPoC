@@ -189,6 +189,42 @@ section h2 {
     background: #fff5f5;
 }
 
+/* Settings Section */
+.settings-section {
+    margin-bottom: 30px;
+}
+
+.settings-card {
+    background: var(--card-bg);
+    padding: 20px;
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+}
+
+.input-with-button {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.input-with-button input {
+    flex: 1;
+    max-width: 400px;
+    padding: 10px 15px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    font-size: 1rem;
+}
+
+.input-with-button input:focus {
+    outline: none;
+    border-color: var(--primary-color);
+}
+
+.input-with-button .btn {
+    white-space: nowrap;
+}
+
 /* Forms */
 .form-group {
     margin-bottom: 15px;

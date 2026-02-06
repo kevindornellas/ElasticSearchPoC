@@ -13,6 +13,19 @@
             <p class="subtitle">MS MARCO Dataset Loader</p>
         </header>
 
+        <section class="settings-section">
+            <h2>⚙️ Settings</h2>
+            <div class="settings-card">
+                <div class="form-group">
+                    <label for="api-url">DataLoader API URL:</label>
+                    <div class="input-with-button">
+                        <input type="text" id="api-url" placeholder="http://192.168.86.28:8000">
+                        <button class="btn btn-primary" onclick="updateApiUrl()">Save</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
         <section class="status-section">
             <h2>System Status</h2>
             <div class="status-cards">

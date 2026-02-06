@@ -1,17 +1,44 @@
-// Configuration - DataLoader service endpoint
-const API_BASE_URL = 'http://192.168.86.28:30800';
+// Configuration - DataLoader service endpoint (stored in localStorage)
+const DEFAULT_API_URL = 'http://192.168.86.28:8000';
+
+function getApiBaseUrl() {
+    return localStorage.getItem('apiBaseUrl') || DEFAULT_API_URL;
+}
+
+function setApiBaseUrl(url) {
+    localStorage.setItem('apiBaseUrl', url);
+}
 
 let statusCheckInterval = null;
 let isLoading = false;
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
+    // Load saved API URL into input field
+    const apiUrlInput = document.getElementById('api-url');
+    if (apiUrlInput) {
+        apiUrlInput.value = getApiBaseUrl();
+    }
+    
     checkHealth();
     loadIndices();
     
     // Check health every 30 seconds
     setInterval(checkHealth, 30000);
 });
+
+// Update API URL from settings
+function updateApiUrl() {
+    const newUrl = document.getElementById('api-url').value.trim();
+    if (newUrl) {
+        setApiBaseUrl(newUrl);
+        showToast('API URL updated! Reconnecting...', 'success');
+        checkHealth();
+        loadIndices();
+    } else {
+        showToast('Please enter a valid URL', 'error');
+    }
+}
 
 // Toast notifications
 function showToast(message, type = 'info') {
@@ -29,7 +56,7 @@ function showToast(message, type = 'info') {
 // API helper function
 async function apiCall(endpoint, options = {}) {
     try {
-        const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+        const response = await fetch(`${getApiBaseUrl()}${endpoint}`, {
             ...options,
             headers: {
                 'Content-Type': 'application/json',
