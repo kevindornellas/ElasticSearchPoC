@@ -55,16 +55,39 @@
                 
                 <div class="form-group">
                     <label for="max-docs">Max Documents (0 = all):</label>
-                    <input type="number" id="max-docs" value="10000" min="0" placeholder="Leave empty for all">
+                    <input type="number" id="max-docs" value="1000" min="0" placeholder="Leave empty for all">
                 </div>
                 
-                <div class="form-group">
-                    <label for="batch-size">Batch Size:</label>
-                    <input type="number" id="batch-size" value="1000" min="100" max="5000">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="chunk-size">Chunk Size:</label>
+                        <input type="number" id="chunk-size" value="512" min="100" max="2000">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="chunk-overlap">Chunk Overlap:</label>
+                        <input type="number" id="chunk-overlap" value="50" min="0" max="200">
+                    </div>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="batch-size">Index Batch Size:</label>
+                        <input type="number" id="batch-size" value="500" min="100" max="5000">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="embedding-batch">Embedding Batch:</label>
+                        <input type="number" id="embedding-batch" value="32" min="8" max="128">
+                    </div>
                 </div>
                 
                 <button class="btn btn-primary" id="load-btn" onclick="loadData()">
                     📥 Start Loading
+                </button>
+                
+                <button class="btn btn-secondary" id="preload-btn" onclick="preloadModel()">
+                    🧠 Pre-load Model
                 </button>
                 
                 <div class="progress-container" id="progress-container" style="display: none;">
@@ -93,11 +116,16 @@
         </section>
 
         <section class="search-section">
-            <h2>🔎 Quick Search</h2>
+            <h2>🔎 Search</h2>
             <div class="search-box">
                 <input type="text" id="search-query" placeholder="Enter search query...">
                 <select id="search-index">
                     <option value="msmarco">msmarco</option>
+                </select>
+                <select id="search-type">
+                    <option value="vector">🧠 Vector (Semantic)</option>
+                    <option value="hybrid">🔀 Hybrid</option>
+                    <option value="text">📝 Text (BM25)</option>
                 </select>
                 <button class="btn btn-primary" onclick="searchData()">Search</button>
             </div>

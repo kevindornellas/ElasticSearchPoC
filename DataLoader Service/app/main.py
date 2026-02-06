@@ -3,11 +3,99 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from elasticsearch import Elasticsearch, helpers
 from datasets import load_dataset
+from sentence_transformers import SentenceTransformer
 import os
 import logging
+import re
+from typing import Generator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Initialize embedding model (all-MiniLM-L6-v2 produces 384-dim embeddings)
+EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+EMBEDDING_DIMS = 384
+embedding_model: SentenceTransformer | None = None
+
+
+def get_embedding_model() -> SentenceTransformer:
+    """Lazy load the embedding model."""
+    global embedding_model
+    if embedding_model is None:
+        logger.info(f"Loading embedding model: {EMBEDDING_MODEL_NAME}")
+        embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+        logger.info("Embedding model loaded successfully")
+    return embedding_model
+
+
+class TextChunker:
+    """Text chunker for splitting documents into smaller chunks."""
+    
+    def __init__(
+        self,
+        chunk_size: int = 512,
+        chunk_overlap: int = 50,
+        min_chunk_size: int = 100
+    ):
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+        self.min_chunk_size = min_chunk_size
+    
+    def chunk_text(self, text: str) -> list[str]:
+        """Split text into overlapping chunks."""
+        if not text or len(text.strip()) < self.min_chunk_size:
+            return [text.strip()] if text and text.strip() else []
+        
+        # Clean the text
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        # If text is smaller than chunk size, return as is
+        if len(text) <= self.chunk_size:
+            return [text]
+        
+        chunks = []
+        start = 0
+        
+        while start < len(text):
+            end = start + self.chunk_size
+            
+            # If not at the end, try to break at a sentence or word boundary
+            if end < len(text):
+                # Try to find a sentence boundary
+                last_period = text.rfind('.', start, end)
+                last_question = text.rfind('?', start, end)
+                last_exclaim = text.rfind('!', start, end)
+                
+                sentence_end = max(last_period, last_question, last_exclaim)
+                
+                if sentence_end > start + self.min_chunk_size:
+                    end = sentence_end + 1
+                else:
+                    # Fall back to word boundary
+                    last_space = text.rfind(' ', start, end)
+                    if last_space > start + self.min_chunk_size:
+                        end = last_space
+            
+            chunk = text[start:end].strip()
+            if chunk and len(chunk) >= self.min_chunk_size:
+                chunks.append(chunk)
+            
+            # Move start position with overlap
+            start = end - self.chunk_overlap if end < len(text) else len(text)
+        
+        return chunks
+
+
+def generate_embeddings(texts: list[str], batch_size: int = 32) -> list[list[float]]:
+    """Generate embeddings for a list of texts."""
+    model = get_embedding_model()
+    embeddings = model.encode(
+        texts,
+        batch_size=batch_size,
+        show_progress_bar=False,
+        convert_to_numpy=True
+    )
+    return embeddings.tolist()
 
 app = FastAPI(
     title="Elasticsearch Data Loader",
@@ -50,7 +138,21 @@ class LoadConfig(BaseModel):
     index_name: str = "msmarco"
     dataset_split: str = "train"
     max_documents: int | None = None
-    batch_size: int = 1000
+    batch_size: int = 500
+    chunk_size: int = 512
+    chunk_overlap: int = 50
+    embedding_batch_size: int = 32
+
+
+class ChunkConfig(BaseModel):
+    text: str
+    chunk_size: int = 512
+    chunk_overlap: int = 50
+
+
+class EmbeddingRequest(BaseModel):
+    texts: list[str]
+    batch_size: int = 32
 
 
 class IndexConfig(BaseModel):
@@ -88,6 +190,67 @@ def health_check():
 def get_loading_status():
     """Get current data loading status."""
     return loading_status
+
+
+@app.post("/chunk")
+def chunk_text(config: ChunkConfig):
+    """Chunk text into smaller pieces with overlap."""
+    try:
+        chunker = TextChunker(
+            chunk_size=config.chunk_size,
+            chunk_overlap=config.chunk_overlap
+        )
+        chunks = chunker.chunk_text(config.text)
+        return {
+            "status": "success",
+            "chunk_count": len(chunks),
+            "chunks": chunks
+        }
+    except Exception as e:
+        logger.error(f"Error chunking text: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/embed")
+def embed_texts(request: EmbeddingRequest):
+    """Generate embeddings for a list of texts."""
+    try:
+        embeddings = generate_embeddings(request.texts, request.batch_size)
+        return {
+            "status": "success",
+            "model": EMBEDDING_MODEL_NAME,
+            "dimensions": EMBEDDING_DIMS,
+            "count": len(embeddings),
+            "embeddings": embeddings
+        }
+    except Exception as e:
+        logger.error(f"Error generating embeddings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/model/info")
+def get_model_info():
+    """Get information about the embedding model."""
+    return {
+        "model_name": EMBEDDING_MODEL_NAME,
+        "dimensions": EMBEDDING_DIMS,
+        "model_loaded": embedding_model is not None
+    }
+
+
+@app.post("/model/load")
+def preload_model():
+    """Pre-load the embedding model into memory."""
+    try:
+        get_embedding_model()
+        return {
+            "status": "success",
+            "message": "Model loaded successfully",
+            "model_name": EMBEDDING_MODEL_NAME
+        }
+    except Exception as e:
+        logger.error(f"Error loading model: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.delete("/clear")
@@ -162,7 +325,7 @@ def list_indices():
 
 
 def load_msmarco_background(config: LoadConfig):
-    """Background task to load MS MARCO dataset."""
+    """Background task to load MS MARCO dataset with embeddings."""
     global loading_status
     
     try:
@@ -172,16 +335,35 @@ def load_msmarco_background(config: LoadConfig):
         
         es = get_es_client()
         
-        # Create index with mapping
-        loading_status["message"] = "Creating index mapping..."
+        # Pre-load embedding model
+        loading_status["message"] = "Loading embedding model..."
+        logger.info("Loading embedding model...")
+        model = get_embedding_model()
+        
+        # Initialize chunker
+        chunker = TextChunker(
+            chunk_size=config.chunk_size,
+            chunk_overlap=config.chunk_overlap
+        )
+        
+        # Create index with vector field mapping
+        loading_status["message"] = "Creating index with vector mapping..."
         index_mapping = {
             "mappings": {
                 "properties": {
+                    "chunk_id": {"type": "keyword"},
                     "passage_id": {"type": "keyword"},
-                    "passage_text": {"type": "text", "analyzer": "standard"},
+                    "text": {"type": "text", "analyzer": "standard"},
+                    "embedding": {
+                        "type": "dense_vector",
+                        "dims": EMBEDDING_DIMS,
+                        "index": True,
+                        "similarity": "cosine"
+                    },
                     "query_id": {"type": "keyword"},
                     "query_text": {"type": "text", "analyzer": "standard"},
-                    "is_selected": {"type": "boolean"}
+                    "is_selected": {"type": "boolean"},
+                    "chunk_index": {"type": "integer"}
                 }
             },
             "settings": {
@@ -195,7 +377,7 @@ def load_msmarco_background(config: LoadConfig):
             es.indices.delete(index=config.index_name)
         
         es.indices.create(index=config.index_name, body=index_mapping)
-        logger.info(f"Created index: {config.index_name}")
+        logger.info(f"Created index with vector field: {config.index_name}")
         
         # Load MS MARCO dataset
         loading_status["message"] = "Loading MS MARCO dataset from Hugging Face..."
@@ -203,57 +385,116 @@ def load_msmarco_background(config: LoadConfig):
         
         dataset = load_dataset("ms_marco", "v1.1", split=config.dataset_split, streaming=True)
         
-        # Process and index documents
-        loading_status["message"] = "Indexing documents..."
+        # Process and index documents with embeddings
+        loading_status["message"] = "Processing and embedding documents..."
         
-        def generate_actions():
-            count = 0
-            for item in dataset:
-                if config.max_documents and count >= config.max_documents:
-                    break
+        batch_texts = []
+        batch_docs = []
+        doc_count = 0
+        chunk_count = 0
+        query_count = 0
+        
+        for item in dataset:
+            if config.max_documents and query_count >= config.max_documents:
+                break
+            
+            query_id = str(item.get("query_id", query_count))
+            query_text = item.get("query", "")
+            passages = item.get("passages", {})
+            
+            passage_texts = passages.get("passage_text", [])
+            is_selected_list = passages.get("is_selected", [])
+            
+            for idx, passage_text in enumerate(passage_texts):
+                is_selected = is_selected_list[idx] if idx < len(is_selected_list) else 0
                 
-                query_id = str(item.get("query_id", count))
-                query_text = item.get("query", "")
-                passages = item.get("passages", {})
+                # Chunk the passage text
+                chunks = chunker.chunk_text(passage_text)
                 
-                passage_texts = passages.get("passage_text", [])
-                is_selected_list = passages.get("is_selected", [])
-                
-                for idx, passage_text in enumerate(passage_texts):
-                    is_selected = is_selected_list[idx] if idx < len(is_selected_list) else 0
+                for chunk_idx, chunk_text in enumerate(chunks):
+                    batch_texts.append(chunk_text)
+                    batch_docs.append({
+                        "chunk_id": f"{query_id}_{idx}_{chunk_idx}",
+                        "passage_id": f"{query_id}_{idx}",
+                        "text": chunk_text,
+                        "query_id": query_id,
+                        "query_text": query_text,
+                        "is_selected": bool(is_selected),
+                        "chunk_index": chunk_idx
+                    })
                     
-                    yield {
-                        "_index": config.index_name,
-                        "_source": {
-                            "passage_id": f"{query_id}_{idx}",
-                            "passage_text": passage_text,
-                            "query_id": query_id,
-                            "query_text": query_text,
-                            "is_selected": bool(is_selected)
-                        }
-                    }
-                
-                count += 1
-                if count % 100 == 0:
-                    loading_status["progress"] = count
-                    loading_status["message"] = f"Processing query {count}..."
-                    logger.info(f"Processed {count} queries")
+                    # Process batch when full
+                    if len(batch_texts) >= config.embedding_batch_size:
+                        # Generate embeddings for batch
+                        embeddings = model.encode(
+                            batch_texts,
+                            batch_size=config.embedding_batch_size,
+                            show_progress_bar=False,
+                            convert_to_numpy=True
+                        )
+                        
+                        # Create bulk actions
+                        actions = []
+                        for doc, embedding in zip(batch_docs, embeddings):
+                            doc["embedding"] = embedding.tolist()
+                            actions.append({
+                                "_index": config.index_name,
+                                "_source": doc
+                            })
+                        
+                        # Bulk index
+                        helpers.bulk(
+                            es,
+                            actions,
+                            chunk_size=config.batch_size,
+                            request_timeout=120,
+                            raise_on_error=False
+                        )
+                        
+                        chunk_count += len(batch_texts)
+                        batch_texts = []
+                        batch_docs = []
+            
+            query_count += 1
+            doc_count += len(passage_texts)
+            
+            if query_count % 50 == 0:
+                loading_status["progress"] = query_count
+                loading_status["message"] = f"Processed {query_count} queries, {chunk_count} chunks indexed..."
+                logger.info(f"Processed {query_count} queries, {chunk_count} chunks")
         
-        # Bulk index
-        success, failed = helpers.bulk(
-            es,
-            generate_actions(),
-            chunk_size=config.batch_size,
-            request_timeout=120,
-            raise_on_error=False
-        )
+        # Process remaining batch
+        if batch_texts:
+            embeddings = model.encode(
+                batch_texts,
+                batch_size=config.embedding_batch_size,
+                show_progress_bar=False,
+                convert_to_numpy=True
+            )
+            
+            actions = []
+            for doc, embedding in zip(batch_docs, embeddings):
+                doc["embedding"] = embedding.tolist()
+                actions.append({
+                    "_index": config.index_name,
+                    "_source": doc
+                })
+            
+            helpers.bulk(
+                es,
+                actions,
+                chunk_size=config.batch_size,
+                request_timeout=120,
+                raise_on_error=False
+            )
+            chunk_count += len(batch_texts)
         
         # Refresh index
         es.indices.refresh(index=config.index_name)
         
-        loading_status["message"] = f"Completed! Indexed {success} documents, {failed} failed"
-        loading_status["progress"] = success
-        logger.info(f"Indexing complete: {success} success, {failed} failed")
+        loading_status["message"] = f"Completed! Indexed {chunk_count} chunks from {query_count} queries"
+        loading_status["progress"] = query_count
+        logger.info(f"Indexing complete: {chunk_count} chunks from {query_count} queries")
         
     except Exception as e:
         logger.error(f"Error loading dataset: {e}")
@@ -302,7 +543,7 @@ def search(index_name: str, q: str, size: int = 10):
                 "query": {
                     "multi_match": {
                         "query": q,
-                        "fields": ["passage_text", "query_text"]
+                        "fields": ["text", "query_text"]
                     }
                 },
                 "size": size
@@ -311,6 +552,66 @@ def search(index_name: str, q: str, size: int = 10):
         
         return {
             "total": result["hits"]["total"]["value"],
+            "search_type": "text",
+            "hits": [
+                {
+                    "score": hit["_score"],
+                    "source": {k: v for k, v in hit["_source"].items() if k != "embedding"}
+                }
+                for hit in result["hits"]["hits"]
+            ]
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error searching: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class VectorSearchRequest(BaseModel):
+    query: str
+    index_name: str = "msmarco"
+    size: int = 10
+    num_candidates: int = 100
+
+
+@app.post("/search/vector")
+def vector_search(request: VectorSearchRequest):
+    """
+    Perform semantic vector search using the query embedding.
+    
+    This uses kNN search with cosine similarity.
+    """
+    try:
+        es = get_es_client()
+        
+        if not es.indices.exists(index=request.index_name):
+            raise HTTPException(status_code=404, detail=f"Index '{request.index_name}' not found")
+        
+        # Generate embedding for the query
+        model = get_embedding_model()
+        query_embedding = model.encode(request.query, convert_to_numpy=True).tolist()
+        
+        # Perform kNN search
+        result = es.search(
+            index=request.index_name,
+            body={
+                "knn": {
+                    "field": "embedding",
+                    "query_vector": query_embedding,
+                    "k": request.size,
+                    "num_candidates": request.num_candidates
+                },
+                "_source": {
+                    "excludes": ["embedding"]
+                }
+            }
+        )
+        
+        return {
+            "total": result["hits"]["total"]["value"],
+            "search_type": "vector",
+            "model": EMBEDDING_MODEL_NAME,
             "hits": [
                 {
                     "score": hit["_score"],
@@ -322,7 +623,88 @@ def search(index_name: str, q: str, size: int = 10):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error searching: {e}")
+        logger.error(f"Error in vector search: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class HybridSearchRequest(BaseModel):
+    query: str
+    index_name: str = "msmarco"
+    size: int = 10
+    num_candidates: int = 100
+    vector_boost: float = 0.7
+    text_boost: float = 0.3
+
+
+@app.post("/search/hybrid")
+def hybrid_search(request: HybridSearchRequest):
+    """
+    Perform hybrid search combining vector similarity and text search.
+    
+    Uses RRF (Reciprocal Rank Fusion) to combine results.
+    """
+    try:
+        es = get_es_client()
+        
+        if not es.indices.exists(index=request.index_name):
+            raise HTTPException(status_code=404, detail=f"Index '{request.index_name}' not found")
+        
+        # Generate embedding for the query
+        model = get_embedding_model()
+        query_embedding = model.encode(request.query, convert_to_numpy=True).tolist()
+        
+        # Perform hybrid search with sub_searches and RRF
+        result = es.search(
+            index=request.index_name,
+            body={
+                "size": request.size,
+                "query": {
+                    "bool": {
+                        "should": [
+                            {
+                                "script_score": {
+                                    "query": {"match_all": {}},
+                                    "script": {
+                                        "source": f"cosineSimilarity(params.query_vector, 'embedding') + 1.0",
+                                        "params": {"query_vector": query_embedding}
+                                    },
+                                    "boost": request.vector_boost
+                                }
+                            },
+                            {
+                                "multi_match": {
+                                    "query": request.query,
+                                    "fields": ["text", "query_text"],
+                                    "boost": request.text_boost
+                                }
+                            }
+                        ]
+                    }
+                },
+                "_source": {
+                    "excludes": ["embedding"]
+                }
+            }
+        )
+        
+        return {
+            "total": result["hits"]["total"]["value"],
+            "search_type": "hybrid",
+            "model": EMBEDDING_MODEL_NAME,
+            "vector_boost": request.vector_boost,
+            "text_boost": request.text_boost,
+            "hits": [
+                {
+                    "score": hit["_score"],
+                    "source": hit["_source"]
+                }
+                for hit in result["hits"]["hits"]
+            ]
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in hybrid search: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

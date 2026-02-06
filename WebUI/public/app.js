@@ -123,6 +123,25 @@ async function loadIndices() {
     }
 }
 
+// Pre-load the embedding model
+async function preloadModel() {
+    const preloadBtn = document.getElementById('preload-btn');
+    
+    try {
+        preloadBtn.disabled = true;
+        preloadBtn.innerHTML = '⏳ Loading Model...';
+        
+        const result = await apiCall('/model/load', { method: 'POST' });
+        
+        showToast(`Model ${result.model_name} loaded successfully!`, 'success');
+    } catch (error) {
+        showToast(error.message, 'error');
+    } finally {
+        preloadBtn.disabled = false;
+        preloadBtn.innerHTML = '🧠 Pre-load Model';
+    }
+}
+
 // Load MS MARCO data
 async function loadData() {
     if (isLoading) {
@@ -132,7 +151,10 @@ async function loadData() {
     
     const indexName = document.getElementById('index-name').value || 'msmarco';
     const maxDocs = parseInt(document.getElementById('max-docs').value) || null;
-    const batchSize = parseInt(document.getElementById('batch-size').value) || 1000;
+    const batchSize = parseInt(document.getElementById('batch-size').value) || 500;
+    const chunkSize = parseInt(document.getElementById('chunk-size').value) || 512;
+    const chunkOverlap = parseInt(document.getElementById('chunk-overlap').value) || 50;
+    const embeddingBatch = parseInt(document.getElementById('embedding-batch').value) || 32;
     
     const loadBtn = document.getElementById('load-btn');
     const progressContainer = document.getElementById('progress-container');
@@ -145,7 +167,10 @@ async function loadData() {
         const config = {
             index_name: indexName,
             dataset_split: 'train',
-            batch_size: batchSize
+            batch_size: batchSize,
+            chunk_size: chunkSize,
+            chunk_overlap: chunkOverlap,
+            embedding_batch_size: embeddingBatch
         };
         
         if (maxDocs && maxDocs > 0) {
@@ -158,7 +183,7 @@ async function loadData() {
         });
         
         isLoading = true;
-        showToast('Data loading started!', 'success');
+        showToast('Data loading with embeddings started!', 'success');
         
         // Start polling for status
         statusCheckInterval = setInterval(checkLoadingStatus, 2000);
@@ -248,6 +273,7 @@ async function clearData() {
 async function searchData() {
     const query = document.getElementById('search-query').value.trim();
     const index = document.getElementById('search-index').value;
+    const searchType = document.getElementById('search-type').value;
     const resultsContainer = document.getElementById('search-results');
     
     if (!query) {
@@ -258,18 +284,53 @@ async function searchData() {
     resultsContainer.innerHTML = '<p class="loading">Searching...</p>';
     
     try {
-        const result = await apiCall(`/search/${index}?q=${encodeURIComponent(query)}&size=10`);
+        let result;
+        
+        if (searchType === 'vector') {
+            // Vector (semantic) search
+            result = await apiCall('/search/vector', {
+                method: 'POST',
+                body: JSON.stringify({
+                    query: query,
+                    index_name: index,
+                    size: 10
+                })
+            });
+        } else if (searchType === 'hybrid') {
+            // Hybrid search
+            result = await apiCall('/search/hybrid', {
+                method: 'POST',
+                body: JSON.stringify({
+                    query: query,
+                    index_name: index,
+                    size: 10,
+                    vector_boost: 0.7,
+                    text_boost: 0.3
+                })
+            });
+        } else {
+            // Text (BM25) search
+            result = await apiCall(`/search/${index}?q=${encodeURIComponent(query)}&size=10`);
+        }
         
         if (result.hits && result.hits.length > 0) {
+            const searchTypeLabel = {
+                'vector': '🧠 Vector (Semantic)',
+                'hybrid': '🔀 Hybrid',
+                'text': '📝 Text (BM25)'
+            };
+            
             resultsContainer.innerHTML = `
                 <p style="margin-bottom: 15px; color: var(--text-secondary);">
-                    Found ${formatNumber(result.total)} results
+                    Found ${formatNumber(result.total)} results using ${searchTypeLabel[searchType] || result.search_type}
+                    ${result.model ? ` • Model: ${result.model}` : ''}
                 </p>
                 ${result.hits.map(hit => `
                     <div class="search-result-item">
-                        <span class="score">Score: ${hit.score.toFixed(2)}</span>
-                        <p class="passage">${escapeHtml(hit.source.passage_text)}</p>
+                        <span class="score">Score: ${hit.score.toFixed(4)}</span>
+                        <p class="passage">${escapeHtml(hit.source.text || hit.source.passage_text)}</p>
                         ${hit.source.query_text ? `<p class="query">Query: ${escapeHtml(hit.source.query_text)}</p>` : ''}
+                        ${hit.source.chunk_index !== undefined ? `<span class="chunk-info">Chunk ${hit.source.chunk_index}</span>` : ''}
                     </div>
                 `).join('')}
             `;
