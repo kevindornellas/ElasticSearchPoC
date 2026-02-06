@@ -14,6 +14,7 @@ spec:
       labels:
         app: elasticsearch-webui
     spec:
+      nodeName: kevin-ubuntu
       containers:
         - name: elasticsearch-webui
           image: localhost:32000/elasticsearch-webui:latest
