@@ -1,5 +1,5 @@
 // Configuration - DataLoader service endpoint (stored in localStorage)
-const DEFAULT_API_URL = 'http://192.168.86.151:8000';
+const DEFAULT_API_URL = '192.168.86.157:8000';
 
 function getApiBaseUrl() {
     return localStorage.getItem('apiBaseUrl') || DEFAULT_API_URL;
@@ -29,8 +29,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // Update API URL from settings
 function updateApiUrl() {
-    const newUrl = document.getElementById('api-url').value.trim();
+    let newUrl = document.getElementById('api-url').value.trim();
     if (newUrl) {
+        // Ensure URL has protocol
+        if (!newUrl.startsWith('http://') && !newUrl.startsWith('https://')) {
+            newUrl = 'http://' + newUrl;
+            document.getElementById('api-url').value = newUrl;
+        }
         setApiBaseUrl(newUrl);
         showToast('API URL updated! Reconnecting...', 'success');
         checkHealth();
