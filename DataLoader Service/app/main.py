@@ -778,8 +778,8 @@ def load_esci_background(config: ESCILoadConfig):
         loading_status["message"] = "Loading Amazon ESCI product catalog from Hugging Face..."
         logger.info("Loading ESCI product catalog...")
         
-        # Load only the product catalog (no queries/labels)
-        dataset = load_dataset("tasksource/esci", "product_catalogue", split="train", streaming=True)
+        # Load the dataset and extract unique products
+        dataset = load_dataset("tasksource/esci", split="train", streaming=True)
         
         # Process and index products with embeddings
         loading_status["message"] = "Processing and embedding products..."
@@ -787,7 +787,7 @@ def load_esci_background(config: ESCILoadConfig):
         batch_texts = []
         batch_docs = []
         product_count = 0
-        seen_products = set()  # Avoid duplicates
+        seen_products = set()  # Avoid duplicates - extracts unique products only
         
         for item in dataset:
             if config.max_documents and product_count >= config.max_documents:
