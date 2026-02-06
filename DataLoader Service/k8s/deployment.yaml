@@ -14,6 +14,7 @@ spec:
       labels:
         app: dataloader-service
     spec:
+      nodeName: kevin-ubuntu
       containers:
         - name: dataloader-service
           image: dataloader-service:latest
