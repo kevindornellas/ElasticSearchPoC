@@ -580,7 +580,16 @@ def search(index_name: str, q: str, size: int = 10):
                 "query": {
                     "multi_match": {
                         "query": q,
-                        "fields": ["text", "query_text"]
+                        "fields": [
+                            "text", "query_text", "passage_text",  # MS MARCO fields
+                            "product_title^2", "product_name^2", "name^2", "title^2",  # Product title fields (boosted)
+                            "description", "product_description",  # Description fields
+                            "category", "product_category",  # Category fields
+                            "brand", "brandName",  # Brand fields
+                            "combined_text"  # Combined text field
+                        ],
+                        "type": "best_fields",
+                        "fuzziness": "AUTO"
                     }
                 },
                 "size": size
@@ -711,7 +720,14 @@ def hybrid_search(request: HybridSearchRequest):
                             {
                                 "multi_match": {
                                     "query": request.query,
-                                    "fields": ["text", "query_text"],
+                                    "fields": [
+                                        "text", "query_text", "passage_text",
+                                        "product_title^2", "product_name^2", "name^2", "title^2",
+                                        "description", "product_description",
+                                        "category", "product_category",
+                                        "brand", "brandName",
+                                        "combined_text"
+                                    ],
                                     "boost": request.text_boost
                                 }
                             }
