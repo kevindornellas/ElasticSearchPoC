@@ -18,9 +18,9 @@ function setApiBaseUrlGpu(url) {
     localStorage.setItem('apiBaseUrlGpu', url);
 }
 
-let statusCheckInterval = null;
-let isLoading = false;
-let currentLoadingService = 'cpu'; // 'cpu' or 'gpu'
+// Per-service loading state
+let cpuLoading = { isLoading: false, statusCheckInterval: null };
+let gpuLoading = { isLoading: false, statusCheckInterval: null };
 
 // Dataset configuration
 const DATASET_CONFIG = {
@@ -339,12 +339,10 @@ async function preloadModelGpu() {
 
 // Load dataset (MS MARCO or ESCI)
 async function loadData() {
-    if (isLoading) {
-        showToast('A loading operation is already in progress', 'warning');
+    if (cpuLoading.isLoading) {
+        showToast('CPU loading is already in progress', 'warning');
         return;
     }
-    
-    currentLoadingService = 'cpu';
     
     const dataset = document.getElementById('dataset-select').value;
     const datasetConfig = DATASET_CONFIG[dataset];
@@ -355,12 +353,16 @@ async function loadData() {
     const embeddingModel = document.getElementById('embedding-model').value;
     
     const loadBtn = document.getElementById('load-btn');
-    const progressContainer = document.getElementById('progress-container');
+    const progressContainer = document.getElementById('progress-container-cpu');
     
     try {
         loadBtn.disabled = true;
         loadBtn.innerHTML = '⏳ Starting...';
         progressContainer.style.display = 'block';
+        
+        // Hide dismiss button from previous run if present
+        const dismissBtn = document.getElementById('progress-dismiss-btn-cpu');
+        if (dismissBtn) { dismissBtn.style.display = 'none'; }
         
         let config = {
             index_name: indexName,
@@ -387,11 +389,11 @@ async function loadData() {
             body: JSON.stringify(config)
         });
         
-        isLoading = true;
+        cpuLoading.isLoading = true;
         showToast(`${datasetConfig.name} data loading started (CPU)!`, 'success');
         
         // Start polling for status
-        statusCheckInterval = setInterval(checkLoadingStatus, 2000);
+        cpuLoading.statusCheckInterval = setInterval(checkLoadingStatusCpu, 2000);
         
     } catch (error) {
         loadBtn.disabled = false;
@@ -403,12 +405,10 @@ async function loadData() {
 
 // Load dataset using GPU
 async function loadDataGpu() {
-    if (isLoading) {
-        showToast('A loading operation is already in progress', 'warning');
+    if (gpuLoading.isLoading) {
+        showToast('GPU loading is already in progress', 'warning');
         return;
     }
-    
-    currentLoadingService = 'gpu';
     
     const dataset = document.getElementById('dataset-select').value;
     const datasetConfig = DATASET_CONFIG[dataset];
@@ -419,12 +419,16 @@ async function loadDataGpu() {
     const embeddingModel = document.getElementById('embedding-model').value;
     
     const loadBtn = document.getElementById('load-btn-gpu');
-    const progressContainer = document.getElementById('progress-container');
+    const progressContainer = document.getElementById('progress-container-gpu');
     
     try {
         loadBtn.disabled = true;
         loadBtn.innerHTML = '⏳ Starting...';
         progressContainer.style.display = 'block';
+        
+        // Hide dismiss button from previous run if present
+        const dismissBtn = document.getElementById('progress-dismiss-btn-gpu');
+        if (dismissBtn) { dismissBtn.style.display = 'none'; }
         
         let config = {
             index_name: indexName,
@@ -451,11 +455,11 @@ async function loadDataGpu() {
             body: JSON.stringify(config)
         });
         
-        isLoading = true;
+        gpuLoading.isLoading = true;
         showToast(`${datasetConfig.name} data loading started (GPU)!`, 'success');
         
         // Start polling for status
-        statusCheckInterval = setInterval(checkLoadingStatus, 2000);
+        gpuLoading.statusCheckInterval = setInterval(checkLoadingStatusGpu, 2000);
         
     } catch (error) {
         loadBtn.disabled = false;
@@ -465,69 +469,85 @@ async function loadDataGpu() {
     }
 }
 
-// Check loading status
-async function checkLoadingStatus() {
-    const progressFill = document.getElementById('progress-fill');
-    const progressText = document.getElementById('progress-text');
-    const progressTimer = document.getElementById('progress-timer');
-    const loadBtnCpu = document.getElementById('load-btn');
-    const loadBtnGpu = document.getElementById('load-btn-gpu');
-    const progressContainer = document.getElementById('progress-container');
+// Shared helper for checking loading status
+function handleLoadingStatus(status, service, progressFillId, progressTextId, progressTimerId, progressContainerId, dismissBtnId, loadBtnId, loadBtnLabel, loadingState) {
+    const progressFill = document.getElementById(progressFillId);
+    const progressText = document.getElementById(progressTextId);
+    const progressTimer = document.getElementById(progressTimerId);
+    const progressContainer = document.getElementById(progressContainerId);
+    const loadBtn = document.getElementById(loadBtnId);
     
-    // Use the appropriate API based on which service is loading
-    const apiFunction = currentLoadingService === 'gpu' ? apiCallGpu : apiCall;
+    progressText.textContent = `[${service}] ${status.message}`;
     
-    try {
-        const status = await apiFunction('/status');
+    // Update timer display
+    if (status.elapsed_seconds !== undefined) {
+        progressTimer.textContent = `⏱️ ${formatTime(status.elapsed_seconds)}`;
+    }
+    
+    if (status.is_loading) {
+        loadBtn.innerHTML = '⏳ Loading...';
         
-        progressText.textContent = `[${currentLoadingService.toUpperCase()}] ${status.message}`;
-        
-        // Update timer display
-        if (status.elapsed_seconds !== undefined) {
-            progressTimer.textContent = `⏱️ ${formatTime(status.elapsed_seconds)}`;
-        }
-        
-        if (status.is_loading) {
-            if (currentLoadingService === 'gpu') {
-                loadBtnGpu.innerHTML = '⏳ Loading...';
-            } else {
-                loadBtnCpu.innerHTML = '⏳ Loading...';
-            }
-            
-            // Animate progress (indeterminate if we don't know total)
-            if (status.progress > 0) {
-                // Use a pseudo-progress based on documents processed
-                const progress = Math.min((status.progress / 10000) * 100, 95);
-                progressFill.style.width = `${progress}%`;
-            } else {
-                // Pulse animation for indeterminate state
-                progressFill.style.width = '30%';
-            }
+        // Animate progress (indeterminate if we don't know total)
+        if (status.progress > 0) {
+            const progress = Math.min((status.progress / 10000) * 100, 95);
+            progressFill.style.width = `${progress}%`;
         } else {
-            // Loading complete
-            isLoading = false;
-            clearInterval(statusCheckInterval);
-            
-            progressFill.style.width = '100%';
-            loadBtnCpu.disabled = false;
-            loadBtnCpu.innerHTML = '📥 Start Loading (CPU)';
-            loadBtnGpu.disabled = false;
-            loadBtnGpu.innerHTML = '🎮 Start Loading (GPU)';
-            
-            if (status.message.includes('Error')) {
-                showToast(status.message, 'error');
-            } else {
-                showToast(`Data loading completed (${currentLoadingService.toUpperCase()}) in ${formatTime(status.elapsed_seconds)}!`, 'success');
-            }
-            
-            // Refresh indices list
-            setTimeout(() => {
-                loadIndices();
-                progressContainer.style.display = 'none';
-            }, 2000);
+            progressFill.style.width = '30%';
         }
+    } else {
+        // Loading complete
+        loadingState.isLoading = false;
+        clearInterval(loadingState.statusCheckInterval);
+        
+        progressFill.style.width = '100%';
+        loadBtn.disabled = false;
+        loadBtn.innerHTML = loadBtnLabel;
+        
+        if (status.message.includes('Error')) {
+            showToast(status.message, 'error');
+            progressText.textContent = `[${service}] ${status.message}`;
+        } else {
+            showToast(`Data loading completed (${service}) in ${formatTime(status.elapsed_seconds)}!`, 'success');
+            progressText.textContent = `✅ [${service}] Completed in ${formatTime(status.elapsed_seconds)}`;
+        }
+
+        // Show dismiss button so user can record the time
+        let dismissBtn = document.getElementById(dismissBtnId);
+        if (!dismissBtn) {
+            dismissBtn = document.createElement('button');
+            dismissBtn.id = dismissBtnId;
+            dismissBtn.className = 'btn btn-secondary';
+            dismissBtn.textContent = '✖ Dismiss';
+            dismissBtn.style.marginTop = '8px';
+            dismissBtn.onclick = () => { progressContainer.style.display = 'none'; };
+            progressContainer.appendChild(dismissBtn);
+        }
+        dismissBtn.style.display = 'inline-block';
+        
+        // Refresh indices list
+        setTimeout(() => {
+            loadIndices();
+        }, 2000);
+    }
+}
+
+// Check CPU loading status
+async function checkLoadingStatusCpu() {
+    try {
+        const status = await apiCall('/status');
+        handleLoadingStatus(status, 'CPU', 'progress-fill-cpu', 'progress-text-cpu', 'progress-timer-cpu', 'progress-container-cpu', 'progress-dismiss-btn-cpu', 'load-btn', '📥 Start Loading (CPU)', cpuLoading);
     } catch (error) {
-        console.error('Error checking status:', error);
+        console.error('Error checking CPU status:', error);
+    }
+}
+
+// Check GPU loading status
+async function checkLoadingStatusGpu() {
+    try {
+        const status = await apiCallGpu('/status');
+        handleLoadingStatus(status, 'GPU', 'progress-fill-gpu', 'progress-text-gpu', 'progress-timer-gpu', 'progress-container-gpu', 'progress-dismiss-btn-gpu', 'load-btn-gpu', '🎮 Start Loading (GPU)', gpuLoading);
+    } catch (error) {
+        console.error('Error checking GPU status:', error);
     }
 }
 

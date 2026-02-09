@@ -347,6 +347,22 @@ section h2 {
     border: 1px solid var(--border-color);
 }
 
+.progress-container-gpu {
+    border-left: 4px solid #7c3aed;
+}
+
+.progress-container-gpu .progress-fill,
+.progress-fill-gpu {
+    background: linear-gradient(90deg, #7c3aed, #a855f7) !important;
+}
+
+.progress-label {
+    font-weight: 600;
+    font-size: 0.9rem;
+    margin-bottom: 10px;
+    color: var(--text-secondary);
+}
+
 .progress-bar {
     height: 24px;
     background: var(--border-color);
