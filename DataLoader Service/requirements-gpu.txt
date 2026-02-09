@@ -1,0 +1,11 @@
+fastapi==0.109.2
+uvicorn[standard]==0.27.1
+elasticsearch==8.12.1
+datasets==2.17.1
+pydantic==2.6.1
+sentence-transformers==2.5.1
+# PyTorch with CUDA 12.1 support
+torch==2.2.1+cu121
+--extra-index-url https://download.pytorch.org/whl/cu121
+numpy==1.26.4
+requests==2.31.0

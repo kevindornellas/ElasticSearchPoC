@@ -311,6 +311,17 @@ section h2 {
     transform: translateY(-2px);
 }
 
+.btn-gpu {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+}
+
+.btn-gpu:hover {
+    background: linear-gradient(135deg, #5a67d8 0%, #6b46a1 100%);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+}
+
 .btn-refresh {
     background: var(--bg-color);
     color: var(--text-color);
@@ -352,10 +363,26 @@ section h2 {
     width: 0%;
 }
 
+.progress-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 20px;
+}
+
 .progress-text {
-    text-align: center;
+    flex: 1;
     font-size: 0.95rem;
     color: var(--text-secondary);
+}
+
+.progress-timer {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--primary-color);
+    font-family: 'Courier New', monospace;
+    min-width: 80px;
+    text-align: right;
 }
 
 /* Search */

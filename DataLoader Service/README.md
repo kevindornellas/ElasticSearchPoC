@@ -50,10 +50,45 @@ kubectl apply -f "../Elastic Search Deployment/elasticsearch-service.yaml"
 # Wait for Elasticsearch to be ready
 kubectl wait --for=condition=ready pod -l app=elasticsearch --timeout=120s
 
-# Deploy the DataLoader service
+# Deploy the DataLoader service (CPU)
 kubectl apply -f k8s/deployment.yaml
 kubectl apply -f k8s/service.yaml
 ```
+
+## GPU Deployment (for performance comparison)
+
+### 1. Build the GPU-enabled Docker image
+
+```bash
+# Build the GPU-enabled image
+docker build -f Dockerfile.gpu -t dataloader-service-gpu:latest .
+
+# Import into microk8s
+docker save dataloader-service-gpu:latest | microk8s ctr image import -
+```
+
+### 2. Enable GPU addon in MicroK8s (if not already done)
+
+```bash
+microk8s enable gpu
+```
+
+### 3. Deploy the GPU service
+
+```bash
+# Deploy the GPU-enabled DataLoader service
+kubectl apply -f k8s/deployment-gpu.yaml
+kubectl apply -f k8s/service-gpu.yaml
+```
+
+### 4. Verify GPU deployment
+
+```bash
+kubectl get pods -l app=dataloader-service-gpu
+kubectl logs -l app=dataloader-service-gpu
+```
+
+The GPU service runs on port 8001 externally to avoid conflicts with the CPU service.
 
 ### 3. Verify deployment
 

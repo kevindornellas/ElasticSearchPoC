@@ -17,10 +17,17 @@
             <h2>⚙️ Settings</h2>
             <div class="settings-card">
                 <div class="form-group">
-                    <label for="api-url">DataLoader API URL:</label>
+                    <label for="api-url">DataLoader API URL (CPU):</label>
                     <div class="input-with-button">
                         <input type="text" id="api-url" placeholder="http://192.168.86.28:8000">
                         <button class="btn btn-primary" onclick="updateApiUrl()">Save</button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="api-url-gpu">DataLoader API URL (GPU):</label>
+                    <div class="input-with-button">
+                        <input type="text" id="api-url-gpu" placeholder="http://192.168.86.28:8001">
+                        <button class="btn btn-primary" onclick="updateApiUrlGpu()">Save</button>
                     </div>
                 </div>
             </div>
@@ -39,7 +46,14 @@
                 <div class="status-card" id="loader-status">
                     <div class="status-icon">⚙️</div>
                     <div class="status-info">
-                        <h3>Data Loader</h3>
+                        <h3>Data Loader (CPU)</h3>
+                        <span class="status-badge checking">Checking...</span>
+                    </div>
+                </div>
+                <div class="status-card" id="loader-status-gpu">
+                    <div class="status-icon">🎮</div>
+                    <div class="status-info">
+                        <h3>Data Loader (GPU)</h3>
                         <span class="status-badge checking">Checking...</span>
                     </div>
                 </div>
@@ -127,18 +141,29 @@
                 </div>
                 
                 <button class="btn btn-primary" id="load-btn" onclick="loadData()">
-                    📥 Start Loading
+                    📥 Start Loading (CPU)
+                </button>
+                
+                <button class="btn btn-gpu" id="load-btn-gpu" onclick="loadDataGpu()">
+                    🎮 Start Loading (GPU)
                 </button>
                 
                 <button class="btn btn-secondary" id="preload-btn" onclick="preloadModel()">
-                    🧠 Pre-load Model
+                    🧠 Pre-load Model (CPU)
+                </button>
+                
+                <button class="btn btn-secondary" id="preload-btn-gpu" onclick="preloadModelGpu()">
+                    🎮 Pre-load Model (GPU)
                 </button>
                 
                 <div class="progress-container" id="progress-container" style="display: none;">
                     <div class="progress-bar">
                         <div class="progress-fill" id="progress-fill"></div>
                     </div>
-                    <div class="progress-text" id="progress-text">Initializing...</div>
+                    <div class="progress-info">
+                        <div class="progress-text" id="progress-text">Initializing...</div>
+                        <div class="progress-timer" id="progress-timer">⏱️ 0:00</div>
+                    </div>
                 </div>
             </div>
 

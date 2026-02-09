@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dataloader-service-gpu
+  labels:
+    app: dataloader-service-gpu
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dataloader-service-gpu
+  template:
+    metadata:
+      labels:
+        app: dataloader-service-gpu
+    spec:
+      nodeName: kevin-ubuntu
+      containers:
+        - name: dataloader-service-gpu
+          image: dataloader-service-gpu:latest
+          imagePullPolicy: Never  # Use local image for microk8s
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: ELASTICSEARCH_HOST
+              value: "elasticsearch"
+            - name: ELASTICSEARCH_PORT
+              value: "9200"
+            - name: ELASTICSEARCH_INDEX
+              value: "msmarco"
+            - name: EMBEDDING_MODEL
+              value: "all-MiniLM-L6-v2"
+            # NVIDIA CUDA environment variables
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: "all"
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: "compute,utility"
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "500m"
+            limits:
+              memory: "8Gi"
+              cpu: "2000m"
+              nvidia.com/gpu: "1"  # Request 1 GPU
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
+      # Toleration for GPU nodes (if using taints)
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"

@@ -15,6 +15,7 @@ import tempfile
 import gzip
 import json
 import ast
+import time
 from typing import Generator
 
 logging.basicConfig(level=logging.INFO)
@@ -179,7 +180,10 @@ loading_status = {
     "is_loading": False,
     "progress": 0,
     "total": 0,
-    "message": "Idle"
+    "message": "Idle",
+    "start_time": None,
+    "end_time": None,
+    "elapsed_seconds": 0
 }
 
 
@@ -285,6 +289,9 @@ def health_check():
 @app.get("/status")
 def get_loading_status():
     """Get current data loading status."""
+    # Calculate elapsed time if loading is in progress
+    if loading_status["is_loading"] and loading_status["start_time"]:
+        loading_status["elapsed_seconds"] = round(time.time() - loading_status["start_time"], 1)
     return loading_status
 
 
@@ -455,6 +462,9 @@ def load_msmarco_background(config: LoadConfig):
         loading_status["is_loading"] = True
         loading_status["message"] = "Initializing..."
         loading_status["progress"] = 0
+        loading_status["start_time"] = time.time()
+        loading_status["end_time"] = None
+        loading_status["elapsed_seconds"] = 0
         
         es = get_es_client()
         
@@ -626,6 +636,9 @@ def load_msmarco_background(config: LoadConfig):
         loading_status["message"] = f"Error: {str(e)}"
     finally:
         loading_status["is_loading"] = False
+        loading_status["end_time"] = time.time()
+        if loading_status["start_time"]:
+            loading_status["elapsed_seconds"] = round(loading_status["end_time"] - loading_status["start_time"], 1)
 
 
 @app.post("/load/msmarco")
@@ -861,6 +874,9 @@ def load_esci_background(config: ESCILoadConfig):
         loading_status["is_loading"] = True
         loading_status["message"] = "Initializing ESCI dataset load..."
         loading_status["progress"] = 0
+        loading_status["start_time"] = time.time()
+        loading_status["end_time"] = None
+        loading_status["elapsed_seconds"] = 0
         
         es = get_es_client()
         
@@ -1035,6 +1051,9 @@ def load_esci_background(config: ESCILoadConfig):
         loading_status["message"] = f"Error: {str(e)}"
     finally:
         loading_status["is_loading"] = False
+        loading_status["end_time"] = time.time()
+        if loading_status["start_time"]:
+            loading_status["elapsed_seconds"] = round(loading_status["end_time"] - loading_status["start_time"], 1)
 
 
 @app.post("/load/esci")
@@ -1078,6 +1097,9 @@ def load_product_search_background(config: ProductSearchConfig):
         loading_status["is_loading"] = True
         loading_status["message"] = "Initializing Product Search Corpus load..."
         loading_status["progress"] = 0
+        loading_status["start_time"] = time.time()
+        loading_status["end_time"] = None
+        loading_status["elapsed_seconds"] = 0
         
         es = get_es_client()
         
@@ -1225,6 +1247,9 @@ def load_product_search_background(config: ProductSearchConfig):
         loading_status["message"] = f"Error: {str(e)}"
     finally:
         loading_status["is_loading"] = False
+        loading_status["end_time"] = time.time()
+        if loading_status["start_time"]:
+            loading_status["elapsed_seconds"] = round(loading_status["end_time"] - loading_status["start_time"], 1)
 
 
 @app.post("/load/product-search")
@@ -1271,6 +1296,9 @@ def load_open_food_facts_background(config: OpenFoodFactsConfig):
         loading_status["is_loading"] = True
         loading_status["message"] = "Initializing Open Food Facts dataset load..."
         loading_status["progress"] = 0
+        loading_status["start_time"] = time.time()
+        loading_status["end_time"] = None
+        loading_status["elapsed_seconds"] = 0
         
         es = get_es_client()
         
@@ -1490,6 +1518,9 @@ def load_open_food_facts_background(config: OpenFoodFactsConfig):
         loading_status["message"] = f"Error: {str(e)}"
     finally:
         loading_status["is_loading"] = False
+        loading_status["end_time"] = time.time()
+        if loading_status["start_time"]:
+            loading_status["elapsed_seconds"] = round(loading_status["end_time"] - loading_status["start_time"], 1)
 
 
 @app.post("/load/open-food-facts")
@@ -1537,6 +1568,9 @@ def load_amazon_best_sellers_background(config: AmazonBestSellersConfig):
         loading_status["is_loading"] = True
         loading_status["message"] = "Initializing Amazon Best Sellers load..."
         loading_status["progress"] = 0
+        loading_status["start_time"] = time.time()
+        loading_status["end_time"] = None
+        loading_status["elapsed_seconds"] = 0
         
         es = get_es_client()
         
@@ -1773,6 +1807,9 @@ def load_amazon_best_sellers_background(config: AmazonBestSellersConfig):
         loading_status["message"] = f"Error: {str(e)}"
     finally:
         loading_status["is_loading"] = False
+        loading_status["end_time"] = time.time()
+        if loading_status["start_time"]:
+            loading_status["elapsed_seconds"] = round(loading_status["end_time"] - loading_status["start_time"], 1)
 
 
 @app.post("/load/amazon-best-sellers")
