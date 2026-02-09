@@ -33,11 +33,11 @@ spec:
               value: "all-MiniLM-L6-v2"
           resources:
             requests:
-              memory: "1Gi"
-              cpu: "500m"
+              memory: "2Gi"
+              cpu: "1000m"
             limits:
-              memory: "4Gi"
-              cpu: "3000m"
+              memory: "6Gi"
+              cpu: "4000m"
           readinessProbe:
             httpGet:
               path: /health
