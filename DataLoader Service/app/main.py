@@ -20,20 +20,69 @@ from typing import Generator
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize embedding model (all-MiniLM-L6-v2 produces 384-dim embeddings)
-EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
-EMBEDDING_DIMS = 384
-embedding_model: SentenceTransformer | None = None
+# Supported embedding models with their dimensions
+EMBEDDING_MODELS = {
+    "all-MiniLM-L6-v2": {
+        "name": "all-MiniLM-L6-v2",
+        "dims": 384,
+        "description": "Fast, lightweight model (384 dims)"
+    },
+    "BAAI/bge-large-en-v1.5": {
+        "name": "BAAI/bge-large-en-v1.5",
+        "dims": 1024,
+        "description": "High quality English embeddings (1024 dims)"
+    },
+    "hkunlp/instructor-xl": {
+        "name": "hkunlp/instructor-xl",
+        "dims": 768,
+        "description": "Instruction-tuned model (768 dims)"
+    },
+    "intfloat/multilingual-e5-large": {
+        "name": "intfloat/multilingual-e5-large",
+        "dims": 1024,
+        "description": "Multilingual embeddings (1024 dims)"
+    },
+    "intfloat/e5-mistral-7b-instruct": {
+        "name": "intfloat/e5-mistral-7b-instruct",
+        "dims": 4096,
+        "description": "Large LLM-based embeddings (4096 dims)"
+    }
+}
+
+# Default model
+DEFAULT_MODEL_NAME = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+
+# Cache for loaded models
+loaded_models: dict[str, SentenceTransformer] = {}
 
 
-def get_embedding_model() -> SentenceTransformer:
+def get_model_info(model_name: str) -> dict:
+    """Get model info, defaulting to all-MiniLM-L6-v2 if not found."""
+    return EMBEDDING_MODELS.get(model_name, EMBEDDING_MODELS["all-MiniLM-L6-v2"])
+
+
+def get_embedding_dims(model_name: str) -> int:
+    """Get embedding dimensions for a model."""
+    return get_model_info(model_name)["dims"]
+
+
+def get_embedding_model(model_name: str = None) -> SentenceTransformer:
     """Lazy load the embedding model."""
-    global embedding_model
-    if embedding_model is None:
-        logger.info(f"Loading embedding model: {EMBEDDING_MODEL_NAME}")
-        embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
-        logger.info("Embedding model loaded successfully")
-    return embedding_model
+    global loaded_models
+    
+    if model_name is None:
+        model_name = DEFAULT_MODEL_NAME
+    
+    # Normalize model name
+    model_info = get_model_info(model_name)
+    model_name = model_info["name"]
+    
+    if model_name not in loaded_models:
+        logger.info(f"Loading embedding model: {model_name}")
+        loaded_models[model_name] = SentenceTransformer(model_name)
+        logger.info(f"Embedding model {model_name} loaded successfully")
+    
+    return loaded_models[model_name]
 
 
 class TextChunker:
@@ -94,9 +143,9 @@ class TextChunker:
         return chunks
 
 
-def generate_embeddings(texts: list[str], batch_size: int = 32) -> list[list[float]]:
+def generate_embeddings(texts: list[str], batch_size: int = 32, model_name: str = None) -> list[list[float]]:
     """Generate embeddings for a list of texts."""
-    model = get_embedding_model()
+    model = get_embedding_model(model_name)
     embeddings = model.encode(
         texts,
         batch_size=batch_size,
@@ -150,6 +199,7 @@ class LoadConfig(BaseModel):
     chunk_size: int = 512
     chunk_overlap: int = 50
     embedding_batch_size: int = 32
+    embedding_model: str = "all-MiniLM-L6-v2"
 
 
 class ESCILoadConfig(BaseModel):
@@ -158,6 +208,7 @@ class ESCILoadConfig(BaseModel):
     batch_size: int = 500
     embedding_batch_size: int = 32
     locale: str = "us"  # us, es, jp
+    embedding_model: str = "all-MiniLM-L6-v2"
 
 
 class ProductSearchConfig(BaseModel):
@@ -165,6 +216,7 @@ class ProductSearchConfig(BaseModel):
     max_documents: int | None = None
     batch_size: int = 500
     embedding_batch_size: int = 32
+    embedding_model: str = "all-MiniLM-L6-v2"
 
 
 class OpenFoodFactsConfig(BaseModel):
@@ -172,6 +224,7 @@ class OpenFoodFactsConfig(BaseModel):
     max_documents: int | None = None
     batch_size: int = 500
     embedding_batch_size: int = 32
+    embedding_model: str = "all-MiniLM-L6-v2"
 
 
 class AmazonBestSellersConfig(BaseModel):
@@ -179,6 +232,7 @@ class AmazonBestSellersConfig(BaseModel):
     max_documents: int | None = None
     batch_size: int = 500
     embedding_batch_size: int = 32
+    embedding_model: str = "all-MiniLM-L6-v2"
 
 
 class ChunkConfig(BaseModel):
@@ -190,6 +244,11 @@ class ChunkConfig(BaseModel):
 class EmbeddingRequest(BaseModel):
     texts: list[str]
     batch_size: int = 32
+    model_name: str = "all-MiniLM-L6-v2"
+
+
+class ModelLoadRequest(BaseModel):
+    model_name: str = "all-MiniLM-L6-v2"
 
 
 class IndexConfig(BaseModel):
@@ -252,11 +311,12 @@ def chunk_text(config: ChunkConfig):
 def embed_texts(request: EmbeddingRequest):
     """Generate embeddings for a list of texts."""
     try:
-        embeddings = generate_embeddings(request.texts, request.batch_size)
+        model_info = get_model_info(request.model_name)
+        embeddings = generate_embeddings(request.texts, request.batch_size, request.model_name)
         return {
             "status": "success",
-            "model": EMBEDDING_MODEL_NAME,
-            "dimensions": EMBEDDING_DIMS,
+            "model": model_info["name"],
+            "dimensions": model_info["dims"],
             "count": len(embeddings),
             "embeddings": embeddings
         }
@@ -265,25 +325,51 @@ def embed_texts(request: EmbeddingRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/model/info")
-def get_model_info():
-    """Get information about the embedding model."""
+@app.get("/models")
+def list_models():
+    """List all available embedding models."""
     return {
-        "model_name": EMBEDDING_MODEL_NAME,
-        "dimensions": EMBEDDING_DIMS,
-        "model_loaded": embedding_model is not None
+        "models": [
+            {
+                "id": model_id,
+                "name": info["name"],
+                "dimensions": info["dims"],
+                "description": info["description"],
+                "loaded": model_id in loaded_models
+            }
+            for model_id, info in EMBEDDING_MODELS.items()
+        ],
+        "default": DEFAULT_MODEL_NAME
+    }
+
+
+@app.get("/model/info")
+def get_model_info_endpoint(model_name: str = None):
+    """Get information about an embedding model."""
+    if model_name is None:
+        model_name = DEFAULT_MODEL_NAME
+    
+    model_info = get_model_info(model_name)
+    return {
+        "model_name": model_info["name"],
+        "dimensions": model_info["dims"],
+        "description": model_info["description"],
+        "model_loaded": model_info["name"] in loaded_models
     }
 
 
 @app.post("/model/load")
-def preload_model():
-    """Pre-load the embedding model into memory."""
+def preload_model(request: ModelLoadRequest = None):
+    """Pre-load an embedding model into memory."""
     try:
-        get_embedding_model()
+        model_name = request.model_name if request else DEFAULT_MODEL_NAME
+        model_info = get_model_info(model_name)
+        get_embedding_model(model_name)
         return {
             "status": "success",
             "message": "Model loaded successfully",
-            "model_name": EMBEDDING_MODEL_NAME
+            "model_name": model_info["name"],
+            "dimensions": model_info["dims"]
         }
     except Exception as e:
         logger.error(f"Error loading model: {e}")
@@ -374,8 +460,9 @@ def load_msmarco_background(config: LoadConfig):
         
         # Pre-load embedding model
         loading_status["message"] = "Loading embedding model..."
-        logger.info("Loading embedding model...")
-        model = get_embedding_model()
+        logger.info(f"Loading embedding model: {config.embedding_model}")
+        model = get_embedding_model(config.embedding_model)
+        embedding_dims = get_embedding_dims(config.embedding_model)
         
         # Initialize chunker
         chunker = TextChunker(
@@ -393,14 +480,15 @@ def load_msmarco_background(config: LoadConfig):
                     "text": {"type": "text", "analyzer": "standard"},
                     "embedding": {
                         "type": "dense_vector",
-                        "dims": EMBEDDING_DIMS,
+                        "dims": embedding_dims,
                         "index": True,
                         "similarity": "cosine"
                     },
                     "query_id": {"type": "keyword"},
                     "query_text": {"type": "text", "analyzer": "standard"},
                     "is_selected": {"type": "boolean"},
-                    "chunk_index": {"type": "integer"}
+                    "chunk_index": {"type": "integer"},
+                    "embedding_model": {"type": "keyword"}
                 }
             },
             "settings": {
@@ -619,6 +707,7 @@ class VectorSearchRequest(BaseModel):
     index_name: str = "msmarco"
     size: int = 10
     num_candidates: int = 100
+    embedding_model: str = "all-MiniLM-L6-v2"
 
 
 @app.post("/search/vector")
@@ -635,7 +724,8 @@ def vector_search(request: VectorSearchRequest):
             raise HTTPException(status_code=404, detail=f"Index '{request.index_name}' not found")
         
         # Generate embedding for the query
-        model = get_embedding_model()
+        model = get_embedding_model(request.embedding_model)
+        model_info = get_model_info(request.embedding_model)
         query_embedding = model.encode(request.query, convert_to_numpy=True).tolist()
         
         # Perform kNN search
@@ -657,7 +747,7 @@ def vector_search(request: VectorSearchRequest):
         return {
             "total": result["hits"]["total"]["value"],
             "search_type": "vector",
-            "model": EMBEDDING_MODEL_NAME,
+            "model": model_info["name"],
             "hits": [
                 {
                     "score": hit["_score"],
@@ -680,6 +770,7 @@ class HybridSearchRequest(BaseModel):
     num_candidates: int = 100
     vector_boost: float = 0.7
     text_boost: float = 0.3
+    embedding_model: str = "all-MiniLM-L6-v2"
 
 
 @app.post("/search/hybrid")
@@ -696,7 +787,8 @@ def hybrid_search(request: HybridSearchRequest):
             raise HTTPException(status_code=404, detail=f"Index '{request.index_name}' not found")
         
         # Generate embedding for the query
-        model = get_embedding_model()
+        model = get_embedding_model(request.embedding_model)
+        model_info = get_model_info(request.embedding_model)
         query_embedding = model.encode(request.query, convert_to_numpy=True).tolist()
         
         # Perform hybrid search with sub_searches and RRF
@@ -743,7 +835,7 @@ def hybrid_search(request: HybridSearchRequest):
         return {
             "total": result["hits"]["total"]["value"],
             "search_type": "hybrid",
-            "model": EMBEDDING_MODEL_NAME,
+            "model": model_info["name"],
             "vector_boost": request.vector_boost,
             "text_boost": request.text_boost,
             "hits": [
@@ -774,8 +866,9 @@ def load_esci_background(config: ESCILoadConfig):
         
         # Pre-load embedding model
         loading_status["message"] = "Loading embedding model..."
-        logger.info("Loading embedding model...")
-        model = get_embedding_model()
+        logger.info(f"Loading embedding model: {config.embedding_model}")
+        model = get_embedding_model(config.embedding_model)
+        embedding_dims = get_embedding_dims(config.embedding_model)
         
         # Create index with product mapping
         loading_status["message"] = "Creating product index with vector mapping..."
@@ -792,11 +885,12 @@ def load_esci_background(config: ESCILoadConfig):
                     "product_class": {"type": "keyword"},
                     "embedding": {
                         "type": "dense_vector",
-                        "dims": EMBEDDING_DIMS,
+                        "dims": embedding_dims,
                         "index": True,
                         "similarity": "cosine"
                     },
-                    "combined_text": {"type": "text", "analyzer": "standard"}
+                    "combined_text": {"type": "text", "analyzer": "standard"},
+                    "embedding_model": {"type": "keyword"}
                 }
             },
             "settings": {
@@ -989,8 +1083,9 @@ def load_product_search_background(config: ProductSearchConfig):
         
         # Pre-load embedding model
         loading_status["message"] = "Loading embedding model..."
-        logger.info("Loading embedding model...")
-        model = get_embedding_model()
+        logger.info(f"Loading embedding model: {config.embedding_model}")
+        model = get_embedding_model(config.embedding_model)
+        embedding_dims = get_embedding_dims(config.embedding_model)
         
         # Create index with product mapping
         loading_status["message"] = "Creating product index with vector mapping..."
@@ -1002,11 +1097,12 @@ def load_product_search_background(config: ProductSearchConfig):
                     "text": {"type": "text", "analyzer": "standard"},
                     "embedding": {
                         "type": "dense_vector",
-                        "dims": EMBEDDING_DIMS,
+                        "dims": embedding_dims,
                         "index": True,
                         "similarity": "cosine"
                     },
-                    "combined_text": {"type": "text", "analyzer": "standard"}
+                    "combined_text": {"type": "text", "analyzer": "standard"},
+                    "embedding_model": {"type": "keyword"}
                 }
             },
             "settings": {
@@ -1180,8 +1276,9 @@ def load_open_food_facts_background(config: OpenFoodFactsConfig):
         
         # Pre-load embedding model
         loading_status["message"] = "Loading embedding model..."
-        logger.info("Loading embedding model...")
-        model = get_embedding_model()
+        logger.info(f"Loading embedding model: {config.embedding_model}")
+        model = get_embedding_model(config.embedding_model)
+        embedding_dims = get_embedding_dims(config.embedding_model)
         
         # Create index with food product mapping
         loading_status["message"] = "Creating Open Food Facts index..."
@@ -1209,11 +1306,12 @@ def load_open_food_facts_background(config: OpenFoodFactsConfig):
                     "fiber_100g": {"type": "float"},
                     "embedding": {
                         "type": "dense_vector",
-                        "dims": EMBEDDING_DIMS,
+                        "dims": embedding_dims,
                         "index": True,
                         "similarity": "cosine"
                     },
-                    "combined_text": {"type": "text", "analyzer": "standard"}
+                    "combined_text": {"type": "text", "analyzer": "standard"},
+                    "embedding_model": {"type": "keyword"}
                 }
             },
             "settings": {
@@ -1444,8 +1542,9 @@ def load_amazon_best_sellers_background(config: AmazonBestSellersConfig):
         
         # Pre-load embedding model
         loading_status["message"] = "Loading embedding model..."
-        logger.info("Loading embedding model...")
-        model = get_embedding_model()
+        logger.info(f"Loading embedding model: {config.embedding_model}")
+        model = get_embedding_model(config.embedding_model)
+        embedding_dims = get_embedding_dims(config.embedding_model)
         
         # Create index with Amazon product mapping (matching actual CSV columns)
         loading_status["message"] = "Creating Amazon Best Sellers index..."
@@ -1468,11 +1567,12 @@ def load_amazon_best_sellers_background(config: AmazonBestSellersConfig):
                     "size": {"type": "text"},
                     "embedding": {
                         "type": "dense_vector",
-                        "dims": EMBEDDING_DIMS,
+                        "dims": embedding_dims,
                         "index": True,
                         "similarity": "cosine"
                     },
-                    "combined_text": {"type": "text", "analyzer": "standard"}
+                    "combined_text": {"type": "text", "analyzer": "standard"},
+                    "embedding_model": {"type": "keyword"}
                 }
             },
             "settings": {

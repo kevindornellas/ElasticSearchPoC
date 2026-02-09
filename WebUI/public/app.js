@@ -225,12 +225,16 @@ async function loadIndices() {
 // Pre-load the embedding model
 async function preloadModel() {
     const preloadBtn = document.getElementById('preload-btn');
+    const embeddingModel = document.getElementById('embedding-model').value;
     
     try {
         preloadBtn.disabled = true;
         preloadBtn.innerHTML = '⏳ Loading Model...';
         
-        const result = await apiCall('/model/load', { method: 'POST' });
+        const result = await apiCall('/model/load', { 
+            method: 'POST',
+            body: JSON.stringify({ model_name: embeddingModel })
+        });
         
         showToast(`Model ${result.model_name} loaded successfully!`, 'success');
     } catch (error) {
@@ -254,6 +258,7 @@ async function loadData() {
     const maxDocs = parseInt(document.getElementById('max-docs').value) || null;
     const batchSize = parseInt(document.getElementById('batch-size').value) || 500;
     const embeddingBatch = parseInt(document.getElementById('embedding-batch').value) || 32;
+    const embeddingModel = document.getElementById('embedding-model').value;
     
     const loadBtn = document.getElementById('load-btn');
     const progressContainer = document.getElementById('progress-container');
@@ -266,7 +271,8 @@ async function loadData() {
         let config = {
             index_name: indexName,
             batch_size: batchSize,
-            embedding_batch_size: embeddingBatch
+            embedding_batch_size: embeddingBatch,
+            embedding_model: embeddingModel
         };
         
         if (maxDocs && maxDocs > 0) {
@@ -379,6 +385,7 @@ async function searchData() {
     const query = document.getElementById('search-query').value.trim();
     const index = document.getElementById('search-index').value;
     const searchType = document.getElementById('search-type').value;
+    const embeddingModel = document.getElementById('search-embedding-model').value;
     const resultsContainer = document.getElementById('search-results');
     
     if (!query) {
@@ -398,7 +405,8 @@ async function searchData() {
                 body: JSON.stringify({
                     query: query,
                     index_name: index,
-                    size: 10
+                    size: 10,
+                    embedding_model: embeddingModel
                 })
             });
         } else if (searchType === 'hybrid') {
@@ -410,7 +418,8 @@ async function searchData() {
                     index_name: index,
                     size: 10,
                     vector_boost: 0.7,
-                    text_boost: 0.3
+                    text_boost: 0.3,
+                    embedding_model: embeddingModel
                 })
             });
         } else {
