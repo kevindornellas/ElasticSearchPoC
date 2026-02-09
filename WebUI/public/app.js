@@ -1,6 +1,6 @@
 // Configuration - DataLoader service endpoint (stored in localStorage)
 const DEFAULT_API_URL = 'http://192.168.86.151:8000';
-const DEFAULT_API_URL_GPU = 'http://192.168.86.151:8001';
+const DEFAULT_API_URL_GPU = 'http://192.168.86.150:8001';
 
 function getApiBaseUrl() {
     return localStorage.getItem('apiBaseUrl') || DEFAULT_API_URL;
@@ -108,8 +108,8 @@ document.addEventListener('DOMContentLoaded', () => {
     checkHealth();
     loadIndices();
     
-    // Check health every 30 seconds
-    setInterval(checkHealth, 30000);
+    // Check health every 60 seconds
+    setInterval(checkHealth, 60000);
 });
 
 // Update API URL from settings
@@ -216,10 +216,8 @@ async function checkHealth() {
     const loaderStatus = document.querySelector('#loader-status .status-badge');
     const loaderStatusGpu = document.querySelector('#loader-status-gpu .status-badge');
     
-    // Check CPU service health
-    try {
-        const health = await apiCall('/health');
-        
+    // Check CPU and GPU service health in parallel so one doesn't block the other
+    const cpuHealthCheck = apiCall('/health').then(health => {
         // Update loader status
         loaderStatus.textContent = 'Healthy';
         loaderStatus.className = 'status-badge healthy';
@@ -233,22 +231,23 @@ async function checkHealth() {
             esStatus.textContent = 'Unavailable';
             esStatus.className = 'status-badge unhealthy';
         }
-    } catch (error) {
+    }).catch(error => {
         loaderStatus.textContent = 'Unavailable';
         loaderStatus.className = 'status-badge unhealthy';
         esStatus.textContent = 'Unknown';
         esStatus.className = 'status-badge checking';
-    }
+    });
     
-    // Check GPU service health
-    try {
-        const healthGpu = await apiCallGpu('/health');
+    const gpuHealthCheck = apiCallGpu('/health').then(healthGpu => {
         loaderStatusGpu.textContent = 'Healthy';
         loaderStatusGpu.className = 'status-badge healthy';
-    } catch (error) {
+    }).catch(error => {
         loaderStatusGpu.textContent = 'Unavailable';
         loaderStatusGpu.className = 'status-badge unhealthy';
-    }
+    });
+    
+    // Wait for both to complete
+    await Promise.all([cpuHealthCheck, gpuHealthCheck]);
 }
 
 // Load and display indices
