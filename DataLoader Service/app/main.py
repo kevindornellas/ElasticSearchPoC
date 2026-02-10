@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from elasticsearch import Elasticsearch, helpers
 from datasets import load_dataset
 from sentence_transformers import SentenceTransformer
+import torch
 import os
 import logging
 import re
@@ -36,17 +37,17 @@ EMBEDDING_MODELS = {
     "hkunlp/instructor-xl": {
         "name": "hkunlp/instructor-xl",
         "dims": 768,
-        "description": "Instruction-tuned model (768 dims)"
+        "description": "Instruction-tuned model (768 dims) - ~5GB VRAM"
     },
     "intfloat/multilingual-e5-large": {
         "name": "intfloat/multilingual-e5-large",
         "dims": 1024,
-        "description": "Multilingual embeddings (1024 dims)"
+        "description": "Multilingual embeddings (1024 dims) - ~2GB VRAM"
     },
     "intfloat/e5-mistral-7b-instruct": {
         "name": "intfloat/e5-mistral-7b-instruct",
         "dims": 4096,
-        "description": "Large LLM-based embeddings (4096 dims)"
+        "description": "Large LLM-based embeddings (4096 dims) - ~14GB VRAM, CPU recommended"
     }
 }
 
@@ -68,7 +69,8 @@ def get_embedding_dims(model_name: str) -> int:
 
 
 def get_embedding_model(model_name: str = None) -> SentenceTransformer:
-    """Lazy load the embedding model."""
+    """Lazy load the embedding model. Only keeps one model in memory at a time
+    to avoid GPU OOM errors on cards with limited VRAM."""
     global loaded_models
     
     if model_name is None:
@@ -79,6 +81,13 @@ def get_embedding_model(model_name: str = None) -> SentenceTransformer:
     model_name = model_info["name"]
     
     if model_name not in loaded_models:
+        # Evict all other models first to free GPU memory
+        for old_name in list(loaded_models.keys()):
+            logger.info(f"Unloading model '{old_name}' to free memory")
+            del loaded_models[old_name]
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
         logger.info(f"Loading embedding model: {model_name}")
         loaded_models[model_name] = SentenceTransformer(model_name)
         logger.info(f"Embedding model {model_name} loaded successfully")
