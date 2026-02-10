@@ -1,5 +1,5 @@
 # GPU-enabled Dockerfile using NVIDIA CUDA base image
-FROM nvidia/cuda:12.4.0-runtime-ubuntu22.04
+FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
 
 # Set environment variables for CUDA
 ENV CUDA_HOME=/usr/local/cuda

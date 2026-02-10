@@ -1,6 +1,6 @@
---extra-index-url https://download.pytorch.org/whl/cu124
+--extra-index-url https://download.pytorch.org/whl/cu121
 
-# PyTorch with CUDA 12.4 support
+# PyTorch with CUDA 12.1 support
 torch==2.6.0
 fastapi==0.109.2
 uvicorn[standard]==0.27.1
