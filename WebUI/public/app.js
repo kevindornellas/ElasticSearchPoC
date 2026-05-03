@@ -1,6 +1,5 @@
 // Configuration - DataLoader service endpoint (stored in localStorage)
-const DEFAULT_API_URL = 'http://192.168.86.151:8000';
-const DEFAULT_API_URL_GPU = 'http://192.168.86.150:8001';
+const DEFAULT_API_URL = 'http://192.168.86.150:8001';
 
 function getApiBaseUrl() {
     return localStorage.getItem('apiBaseUrl') || DEFAULT_API_URL;
@@ -10,16 +9,7 @@ function setApiBaseUrl(url) {
     localStorage.setItem('apiBaseUrl', url);
 }
 
-function getApiBaseUrlGpu() {
-    return localStorage.getItem('apiBaseUrlGpu') || DEFAULT_API_URL_GPU;
-}
-
-function setApiBaseUrlGpu(url) {
-    localStorage.setItem('apiBaseUrlGpu', url);
-}
-
-// Per-service loading state
-let cpuLoading = { isLoading: false, statusCheckInterval: null };
+// Loading state
 let gpuLoading = { isLoading: false, statusCheckInterval: null };
 
 // Dataset configuration
@@ -91,15 +81,9 @@ function onDatasetChange() {
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
     // Load saved API URL into input field
-    const apiUrlInput = document.getElementById('api-url');
+    const apiUrlInput = document.getElementById('api-url-gpu');
     if (apiUrlInput) {
         apiUrlInput.value = getApiBaseUrl();
-    }
-    
-    // Load saved GPU API URL into input field
-    const apiUrlInputGpu = document.getElementById('api-url-gpu');
-    if (apiUrlInputGpu) {
-        apiUrlInputGpu.value = getApiBaseUrlGpu();
     }
     
     // Initialize dataset selector
@@ -114,24 +98,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // Update API URL from settings
 function updateApiUrl() {
-    let newUrl = document.getElementById('api-url').value.trim();
-    if (newUrl) {
-        // Ensure URL has protocol
-        if (!newUrl.startsWith('http://') && !newUrl.startsWith('https://')) {
-            newUrl = 'http://' + newUrl;
-            document.getElementById('api-url').value = newUrl;
-        }
-        setApiBaseUrl(newUrl);
-        showToast('CPU API URL updated! Reconnecting...', 'success');
-        checkHealth();
-        loadIndices();
-    } else {
-        showToast('Please enter a valid URL', 'error');
-    }
-}
-
-// Update GPU API URL from settings
-function updateApiUrlGpu() {
     let newUrl = document.getElementById('api-url-gpu').value.trim();
     if (newUrl) {
         // Ensure URL has protocol
@@ -139,9 +105,10 @@ function updateApiUrlGpu() {
             newUrl = 'http://' + newUrl;
             document.getElementById('api-url-gpu').value = newUrl;
         }
-        setApiBaseUrlGpu(newUrl);
-        showToast('GPU API URL updated! Reconnecting...', 'success');
+        setApiBaseUrl(newUrl);
+        showToast('API URL updated! Reconnecting...', 'success');
         checkHealth();
+        loadIndices();
     } else {
         showToast('Please enter a valid URL', 'error');
     }
@@ -185,44 +152,16 @@ async function apiCall(endpoint, options = {}) {
     }
 }
 
-// API helper function for GPU service
-async function apiCallGpu(endpoint, options = {}) {
-    try {
-        const response = await fetch(`${getApiBaseUrlGpu()}${endpoint}`, {
-            ...options,
-            headers: {
-                'Content-Type': 'application/json',
-                ...options.headers
-            }
-        });
-        
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.detail || 'API request failed');
-        }
-        
-        return await response.json();
-    } catch (error) {
-        if (error.message.includes('Failed to fetch')) {
-            throw new Error('Unable to connect to GPU Data Loader service');
-        }
-        throw error;
-    }
-}
-
 // Check system health
 async function checkHealth() {
     const esStatus = document.querySelector('#es-status .status-badge');
-    const loaderStatus = document.querySelector('#loader-status .status-badge');
     const loaderStatusGpu = document.querySelector('#loader-status-gpu .status-badge');
-    
-    // Check CPU and GPU service health in parallel so one doesn't block the other
-    const cpuHealthCheck = apiCall('/health').then(health => {
-        // Update loader status
-        loaderStatus.textContent = 'Healthy';
-        loaderStatus.className = 'status-badge healthy';
-        
-        // Update Elasticsearch status
+
+    try {
+        const health = await apiCall('/health');
+        loaderStatusGpu.textContent = 'Healthy';
+        loaderStatusGpu.className = 'status-badge healthy';
+
         if (health.elasticsearch && health.elasticsearch.status !== 'unavailable') {
             const status = health.elasticsearch.status;
             esStatus.textContent = status.charAt(0).toUpperCase() + status.slice(1);
@@ -231,23 +170,12 @@ async function checkHealth() {
             esStatus.textContent = 'Unavailable';
             esStatus.className = 'status-badge unhealthy';
         }
-    }).catch(error => {
-        loaderStatus.textContent = 'Unavailable';
-        loaderStatus.className = 'status-badge unhealthy';
-        esStatus.textContent = 'Unknown';
-        esStatus.className = 'status-badge checking';
-    });
-    
-    const gpuHealthCheck = apiCallGpu('/health').then(healthGpu => {
-        loaderStatusGpu.textContent = 'Healthy';
-        loaderStatusGpu.className = 'status-badge healthy';
-    }).catch(error => {
+    } catch (error) {
         loaderStatusGpu.textContent = 'Unavailable';
         loaderStatusGpu.className = 'status-badge unhealthy';
-    });
-    
-    // Wait for both to complete
-    await Promise.all([cpuHealthCheck, gpuHealthCheck]);
+        esStatus.textContent = 'Unknown';
+        esStatus.className = 'status-badge checking';
+    }
 }
 
 // Load and display indices
@@ -292,8 +220,8 @@ async function loadIndices() {
 }
 
 // Pre-load the embedding model
-async function preloadModel() {
-    const preloadBtn = document.getElementById('preload-btn');
+async function preloadModelGpu() {
+    const preloadBtn = document.getElementById('preload-btn-gpu');
     const embeddingModel = document.getElementById('embedding-model').value;
     
     try {
@@ -310,96 +238,7 @@ async function preloadModel() {
         showToast(error.message, 'error');
     } finally {
         preloadBtn.disabled = false;
-        preloadBtn.innerHTML = '🧠 Pre-load Model (CPU)';
-    }
-}
-
-// Pre-load the embedding model on GPU
-async function preloadModelGpu() {
-    const preloadBtn = document.getElementById('preload-btn-gpu');
-    const embeddingModel = document.getElementById('embedding-model').value;
-    
-    try {
-        preloadBtn.disabled = true;
-        preloadBtn.innerHTML = '⏳ Loading Model...';
-        
-        const result = await apiCallGpu('/model/load', { 
-            method: 'POST',
-            body: JSON.stringify({ model_name: embeddingModel })
-        });
-        
-        showToast(`GPU Model ${result.model_name} loaded successfully!`, 'success');
-    } catch (error) {
-        showToast(error.message, 'error');
-    } finally {
-        preloadBtn.disabled = false;
-        preloadBtn.innerHTML = '🎮 Pre-load Model (GPU)';
-    }
-}
-
-// Load dataset (MS MARCO or ESCI)
-async function loadData() {
-    if (cpuLoading.isLoading) {
-        showToast('CPU loading is already in progress', 'warning');
-        return;
-    }
-    
-    const dataset = document.getElementById('dataset-select').value;
-    const datasetConfig = DATASET_CONFIG[dataset];
-    const indexName = document.getElementById('index-name').value || datasetConfig.defaultIndex;
-    const maxDocs = parseInt(document.getElementById('max-docs').value) || null;
-    const batchSize = parseInt(document.getElementById('batch-size').value) || 500;
-    const embeddingBatch = parseInt(document.getElementById('embedding-batch').value) || 32;
-    const embeddingModel = document.getElementById('embedding-model').value;
-    
-    const loadBtn = document.getElementById('load-btn');
-    const progressContainer = document.getElementById('progress-container-cpu');
-    
-    try {
-        loadBtn.disabled = true;
-        loadBtn.innerHTML = '⏳ Starting...';
-        progressContainer.style.display = 'block';
-        
-        // Hide dismiss button from previous run if present
-        const dismissBtn = document.getElementById('progress-dismiss-btn-cpu');
-        if (dismissBtn) { dismissBtn.style.display = 'none'; }
-        
-        let config = {
-            index_name: indexName,
-            batch_size: batchSize,
-            embedding_batch_size: embeddingBatch,
-            embedding_model: embeddingModel
-        };
-        
-        if (maxDocs && maxDocs > 0) {
-            config.max_documents = maxDocs;
-        }
-        
-        // Add dataset-specific config
-        if (dataset === 'msmarco') {
-            config.dataset_split = 'train';
-            config.chunk_size = parseInt(document.getElementById('chunk-size').value) || 512;
-            config.chunk_overlap = parseInt(document.getElementById('chunk-overlap').value) || 50;
-        } else if (dataset === 'esci') {
-            config.locale = document.getElementById('locale-select').value || 'us';
-        }
-        
-        await apiCall(datasetConfig.endpoint, {
-            method: 'POST',
-            body: JSON.stringify(config)
-        });
-        
-        cpuLoading.isLoading = true;
-        showToast(`${datasetConfig.name} data loading started (CPU)!`, 'success');
-        
-        // Start polling for status
-        cpuLoading.statusCheckInterval = setInterval(checkLoadingStatusCpu, 2000);
-        
-    } catch (error) {
-        loadBtn.disabled = false;
-        loadBtn.innerHTML = '📥 Start Loading (CPU)';
-        progressContainer.style.display = 'none';
-        showToast(error.message, 'error');
+        preloadBtn.innerHTML = '🧠 Pre-load Model';
     }
 }
 
@@ -450,20 +289,20 @@ async function loadDataGpu() {
             config.locale = document.getElementById('locale-select').value || 'us';
         }
         
-        await apiCallGpu(datasetConfig.endpoint, {
+        await apiCall(datasetConfig.endpoint, {
             method: 'POST',
             body: JSON.stringify(config)
         });
         
         gpuLoading.isLoading = true;
-        showToast(`${datasetConfig.name} data loading started (GPU)!`, 'success');
+        showToast(`${datasetConfig.name} data loading started!`, 'success');
         
         // Start polling for status
         gpuLoading.statusCheckInterval = setInterval(checkLoadingStatusGpu, 2000);
         
     } catch (error) {
         loadBtn.disabled = false;
-        loadBtn.innerHTML = '🎮 Start Loading (GPU)';
+        loadBtn.innerHTML = '📥 Start Loading';
         progressContainer.style.display = 'none';
         showToast(error.message, 'error');
     }
@@ -531,23 +370,13 @@ function handleLoadingStatus(status, service, progressFillId, progressTextId, pr
     }
 }
 
-// Check CPU loading status
-async function checkLoadingStatusCpu() {
-    try {
-        const status = await apiCall('/status');
-        handleLoadingStatus(status, 'CPU', 'progress-fill-cpu', 'progress-text-cpu', 'progress-timer-cpu', 'progress-container-cpu', 'progress-dismiss-btn-cpu', 'load-btn', '📥 Start Loading (CPU)', cpuLoading);
-    } catch (error) {
-        console.error('Error checking CPU status:', error);
-    }
-}
-
-// Check GPU loading status
+// Check loading status
 async function checkLoadingStatusGpu() {
     try {
-        const status = await apiCallGpu('/status');
-        handleLoadingStatus(status, 'GPU', 'progress-fill-gpu', 'progress-text-gpu', 'progress-timer-gpu', 'progress-container-gpu', 'progress-dismiss-btn-gpu', 'load-btn-gpu', '🎮 Start Loading (GPU)', gpuLoading);
+        const status = await apiCall('/status');
+        handleLoadingStatus(status, 'GPU', 'progress-fill-gpu', 'progress-text-gpu', 'progress-timer-gpu', 'progress-container-gpu', 'progress-dismiss-btn-gpu', 'load-btn-gpu', '📥 Start Loading', gpuLoading);
     } catch (error) {
-        console.error('Error checking GPU status:', error);
+        console.error('Error checking loading status:', error);
     }
 }
 
