@@ -7,6 +7,7 @@ This document contains all commands needed to build and deploy the Elasticsearch
 - microk8s cluster running
 - buildah installed on cluster machine
 - Harbor accessible at harbor.kevin.local
+- **Docker daemon NOT required** - buildah builds images directly
 
 ---
 
@@ -27,28 +28,16 @@ chmod +x deploy-to-harbor-buildah.sh
 cd "DataLoader Service"
 ```
 
-#### Build, Tag, and Push using buildah workflow
+#### Build, Tag, and Push using buildah (no Docker required)
 ```bash
-# Build the image with Docker
-docker build -t dataloader-service:latest -f Dockerfile .
-
-# Import into microk8s
-docker save dataloader-service:latest | microk8s ctr image import -
-
-# Export from microk8s to tar
-microk8s ctr images export dataloader-service.tar dataloader-service:latest
-
-# Pull into buildah
-buildah pull docker-archive:dataloader-service.tar
+# Build the image with buildah
+buildah bud -t dataloader-service:latest -f Dockerfile .
 
 # Tag for Harbor
 buildah tag dataloader-service:latest harbor.kevin.local/library/dataloader-service:latest
 
 # Push to Harbor (without TLS verification)
 buildah push --tls-verify=false harbor.kevin.local/library/dataloader-service:latest
-
-# Clean up tar file
-rm dataloader-service.tar
 
 # Pull from Harbor into microk8s
 microk8s ctr images pull --hosts-dir /var/snap/microk8s/current/args/certs.d harbor.kevin.local/library/dataloader-service:latest
@@ -91,19 +80,10 @@ chmod +x deploy-to-harbor-buildah.sh
 cd WebUI
 ```
 
-#### Build, Tag, and Push using buildah workflow
+#### Build, Tag, and Push using buildah (no Docker required)
 ```bash
-# Build the image with Docker
-docker build -t elasticsearch-webui:latest -f Dockerfile .
-
-# Import into microk8s
-docker save elasticsearch-webui:latest | microk8s ctr image import -
-
-# Export from microk8s to tar
-microk8s ctr images export elasticsearch-webui.tar elasticsearch-webui:latest
-
-# Pull into buildah
-buildah pull docker-archive:elasticsearch-webui.tar
+# Build the image with buildah
+buildah bud -t elasticsearch-webui:latest -f Dockerfile .
 
 # Tag for Harbor
 buildah tag elasticsearch-webui:latest harbor.kevin.local/library/elasticsearch-webui:latest
@@ -111,10 +91,27 @@ buildah tag elasticsearch-webui:latest harbor.kevin.local/library/elasticsearch-
 # Push to Harbor (without TLS verification)
 buildah push --tls-verify=false harbor.kevin.local/library/elasticsearch-webui:latest
 
-# Clean up tar file
-rm elasticsearch-webui.tar
-
 # Pull from Harbor into microk8s
+microk8s ctr images pull --hosts-dir /var/snap/microk8s/current/args/certs.d harbor.kevin.local/library/elasticsearch-webui:latest
+```
+
+#### Deploy to Kubernetes
+```bash
+kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/service.yaml
+```
+
+#### Verify
+```bash
+kubectl get pods -l app=elasticsearch-webui -o wide
+kubectl logs -l app=elasticsearch-webui --tail=50
+kubectl get svc elasticsearch-webui
+```
+
+---
+
+## Quick Deploy All Services
+
 Deploy everything at once using the automated scripts:
 
 ```bash
@@ -126,31 +123,6 @@ chmod +x deploy-to-harbor-buildah.sh
 cd ../WebUI
 chmod +x deploy-to-harbor-buildah.sh
 ./deploy-to-harbor-buildah.sh
-kubectl logs -l app=elasticsearch-webui --tail=50
-
-# Check service and get LoadBalancer IP
-kubectl get svc -l app=elasticsearch-webui
-```
-
----
-
-## Quick Deploy All Services
-
-If you want to deploy everything at once:
-
-```bash
-# From the repo root
-cd "DataLoader Service"
-docker build -t dataloader-service:latest .
-docker tag dataloader-service:latest 192.168.86.147/library/dataloader-service:latest
-docker push 192.168.86.147/library/dataloader-service:latest
-kubectl apply -f k8s/deployment-gpu.yaml -f k8s/service-gpu.yaml
-
-cd ../WebUI
-docker build -t elasticsearch-webui:latest .
-docker tag elasticsearch-webui:latest 192.168.86.147/library/elasticsearch-webui:latest
-docker push 192.168.86.147/library/elasticsearch-webui:latest
-kubectl apply -f k8s/deployment.yaml -f k8s/service.yaml
 
 cd ..
 ```
@@ -159,11 +131,7 @@ cd ..
 
 ## Troubleshooting
 
-### Cannot push to Harbor
-- Ensure you're logged in: `docker login 192.168.86.147`
-- Check that the `library` project exists in Harbor
-- Verify Harbor is accessible: `curl http://192.168.86.147`
- with buildah
+### Cannot push to Harbor with buildah
 - Using `--tls-verify=false` flag bypasses certificate validation
 - Check that the `library` project exists in Harbor
 - Verify Harbor is accessible: `curl http://harbor.kevin.local` or `curl http://192.168.86.147`
@@ -194,15 +162,11 @@ cat /etc/hosts | grep harbor
 ## Architecture
 
 ```
-Build Machine
-    ↓ docker build
-  Local Image
-    ↓ microk8s ctr import
-  microk8s containerd
-    ↓ export to tar
-  TAR Archive
-    ↓ buildah pull
+Build Machine (microk8s node)
+    ↓ buildah bud (no Docker daemon)
   Buildah Storage
+    ↓ buildah tag
+  Tagged Image
     ↓ buildah push --tls-verify=false
 Harbor Registry (harbor.kevin.local / 192.168.86.147)
     ├── library/dataloader-service:latest
@@ -217,14 +181,17 @@ Harbor Registry (harbor.kevin.local / 192.168.86.147)
 
 ## Workflow Summary
 
-The deployment process follows this workflow:
-1. **Build** with Docker
-2. **Import** into microk8s containerd
-3. **Export** to tar archive
-4. **Pull** tar into buildah
-5. **Tag** for Harbor registry
-6. **Push** to Harbor (without TLS verification)
-7. **Pull** from Harbor into microk8s
-8. **Deploy** Kubernetes manifests
+The deployment process follows this simplified workflow (no Docker required):
+1. **Build** with buildah (`buildah bud`)
+2. **Tag** for Harbor registry
+3. **Push** to Harbor (without TLS verification)
+4. **Pull** from Harbor into microk8s
+5. **Deploy** Kubernetes manifests
 
 This ensures the image is available both in Harbor (for persistence/sharing) and in microk8s containerd (for immediate pod startup).
+
+**Why buildah instead of Docker?**
+- Buildah works without a daemon
+- Better suited for CI/CD and rootless builds
+- Compatible with Dockerfiles
+- Native integration with container registries

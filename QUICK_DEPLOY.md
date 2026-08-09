@@ -2,23 +2,21 @@
 
 Run these commands on your cluster machine to deploy to Harbor.
 
+**Note:** Docker daemon is not required. These scripts use `buildah` to build images directly.
+
 ## DataLoader Service
 
 ```bash
 cd "DataLoader Service"
 
-# Build
-docker build -t dataloader-service:latest -f Dockerfile .
-docker save dataloader-service:latest | microk8s ctr image import -
+# Build with buildah
+buildah bud -t dataloader-service:latest -f Dockerfile .
 
-# Export and push to Harbor
-microk8s ctr images export dataloader-service.tar dataloader-service:latest
-buildah pull docker-archive:dataloader-service.tar
+# Tag and push to Harbor
 buildah tag dataloader-service:latest harbor.kevin.local/library/dataloader-service:latest
 buildah push --tls-verify=false harbor.kevin.local/library/dataloader-service:latest
-rm dataloader-service.tar
 
-# Pull from Harbor and deploy
+# Pull from Harbor into microk8s and deploy
 microk8s ctr images pull --hosts-dir /var/snap/microk8s/current/args/certs.d harbor.kevin.local/library/dataloader-service:latest
 kubectl apply -f k8s/deployment-gpu.yaml
 kubectl apply -f k8s/service-gpu.yaml
@@ -32,18 +30,14 @@ kubectl get pods -l app=dataloader-service-gpu -o wide
 ```bash
 cd WebUI
 
-# Build
-docker build -t elasticsearch-webui:latest -f Dockerfile .
-docker save elasticsearch-webui:latest | microk8s ctr image import -
+# Build with buildah
+buildah bud -t elasticsearch-webui:latest -f Dockerfile .
 
-# Export and push to Harbor
-microk8s ctr images export elasticsearch-webui.tar elasticsearch-webui:latest
-buildah pull docker-archive:elasticsearch-webui.tar
+# Tag and push to Harbor
 buildah tag elasticsearch-webui:latest harbor.kevin.local/library/elasticsearch-webui:latest
 buildah push --tls-verify=false harbor.kevin.local/library/elasticsearch-webui:latest
-rm elasticsearch-webui.tar
 
-# Pull from Harbor and deploy
+# Pull from Harbor into microk8s and deploy
 microk8s ctr images pull --hosts-dir /var/snap/microk8s/current/args/certs.d harbor.kevin.local/library/elasticsearch-webui:latest
 kubectl apply -f k8s/deployment.yaml
 kubectl apply -f k8s/service.yaml
