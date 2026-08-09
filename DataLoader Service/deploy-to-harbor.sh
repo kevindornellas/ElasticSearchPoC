@@ -7,7 +7,7 @@ set -e
 # Configuration
 IMAGE_NAME="dataloader-service"
 IMAGE_TAG="latest"
-HARBOR_REGISTRY="harbor.harbor.svc.cluster.local"
+HARBOR_REGISTRY="192.168.86.147"
 HARBOR_PROJECT="library"
 HARBOR_IMAGE="${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${IMAGE_NAME}:${IMAGE_TAG}"
 
