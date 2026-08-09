@@ -1,11 +1,11 @@
 #!/bin/bash
-# Deploy DataLoader Service to Harbor and Kubernetes
+# Deploy WebUI to Harbor and Kubernetes
 # This script builds, tags, and pushes the Docker image to Harbor registry
 
 set -e
 
 # Configuration
-IMAGE_NAME="dataloader-service"
+IMAGE_NAME="elasticsearch-webui"
 IMAGE_TAG="latest"
 HARBOR_REGISTRY="harbor.kevin.local"
 HARBOR_PROJECT="library"
@@ -28,9 +28,9 @@ echo "Image: ${HARBOR_IMAGE}"
 
 echo ""
 echo "Applying Kubernetes deployment..."
-kubectl apply -f k8s/deployment-gpu.yaml
-kubectl apply -f k8s/service-gpu.yaml
+kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/service.yaml
 
 echo ""
 echo "Deployment successful!"
-echo "Check status with: kubectl get pods -l app=dataloader-service-gpu"
+echo "Check status with: kubectl get pods -l app=elasticsearch-webui"

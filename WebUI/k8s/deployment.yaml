@@ -14,11 +14,10 @@ spec:
       labels:
         app: elasticsearch-webui
     spec:
-      nodeName: kevin-ubuntu
       containers:
         - name: elasticsearch-webui
-          image: elasticsearch-webui:latest
-          imagePullPolicy: Never  # Use local image for microk8s
+          image: harbor.kevin.local/library/elasticsearch-webui:latest
+          imagePullPolicy: Always  # Pull from Harbor registry
           ports:
             - containerPort: 80
               name: http

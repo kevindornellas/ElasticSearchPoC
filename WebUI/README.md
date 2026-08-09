@@ -28,6 +28,81 @@ Make sure the following are already deployed:
 1. Elasticsearch (from `Elastic Search Deployment/`)
 2. DataLoader Service (from `DataLoader Service/`)
 
+### Option 1: Deploy using Harbor Registry (Recommended)
+
+This approach uses Harbor as a container registry.
+
+#### 1. Using the automated buildah workflow
+
+```bash
+cd WebUI
+chmod +x deploy-to-harbor-buildah.sh
+./deploy-to-harbor-buildah.sh
+```
+
+This script follows the complete workflow:
+- Builds with Docker
+- Imports to microk8s
+- Exports to tar
+- Pulls into buildah
+- Tags for Harbor
+- Pushes to Harbor (without TLS verification)
+- Pulls from Harbor back into microk8s
+- Deploys to Kubernetes
+
+#### 2. Manual buildah workflow
+
+```bash
+# Build and import to microk8s
+docker build -t elasticsearch-webui:latest .
+docker save elasticsearch-webui:latest | microk8s ctr image import -
+
+# Export, tag, and push to Harbor
+microk8s ctr images export elasticsearch-webui.tar elasticsearch-webui:latest
+buildah pull docker-archive:elasticsearch-webui.tar
+buildah tag elasticsearch-webui:latest harbor.kevin.local/library/elasticsearch-webui:latest
+buildah push --tls-verify=false harbor.kevin.local/library/elasticsearch-webui:latest
+rm elasticsearch-webui.tar
+
+# Pull from Harbor and deploy
+microk8s ctr images pull --hosts-dir /var/snap/microk8s/current/args/certs.d harbor.kevin.local/library/elasticsearch-webui:latest
+kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/service.yaml
+```
+
+#### 3. Alternative Docker workflow (if buildah not available)
+
+**Using PowerShell:**
+```powershell
+cd WebUI
+.\deploy-to-harbor.ps1
+```
+
+**Using Bash:**
+```bash
+cd WebUI
+chmod +x deploy-to-harbor.sh
+./deploy-to-harbor.sh
+```
+
+**Manual steps:**
+```bash
+# Build the image
+docker build -t elasticsearch-webui:latest .
+
+# Tag for Harbor
+docker tag elasticsearch-webui:latest harbor.kevin.local/library/elasticsearch-webui:latest
+
+# Push to Harbor
+docker push harbor.kevin.local/library/elasticsearch-webui:latest
+
+# Deploy to Kubernetes
+kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/service.yaml
+```
+
+### Option 2: Deploy using local images (Legacy)
+
 ### 1. Enable MetalLB for LoadBalancer support (if not already enabled)
 
 ```bash

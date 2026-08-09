@@ -29,16 +29,45 @@ A FastAPI web service for managing Elasticsearch data and loading the MS MARCO d
 
 This approach uses Harbor as a container registry and deploys to the stormtrooper node.
 
-#### 1. Login to Harbor
+#### 1. Using the automated buildah workflow
 
 ```bash
-# Login to Harbor registry
-docker login harbor.harbor.svc.cluster.local
-# Or if accessing from outside the cluster:
-# docker login <harbor-external-ip>
+cd "DataLoader Service"
+chmod +x deploy-to-harbor-buildah.sh
+./deploy-to-harbor-buildah.sh
 ```
 
-#### 2. Build, Push, and Deploy
+This script follows the complete workflow:
+- Builds with Docker
+- Imports to microk8s
+- Exports to tar
+- Pulls into buildah
+- Tags for Harbor
+- Pushes to Harbor (without TLS verification)
+- Pulls from Harbor back into microk8s
+- Deploys to Kubernetes
+
+#### 2. Manual buildah workflow
+
+```bash
+# Build and import to microk8s
+docker build -t dataloader-service:latest .
+docker save dataloader-service:latest | microk8s ctr image import -
+
+# Export, tag, and push to Harbor
+microk8s ctr images export dataloader-service.tar dataloader-service:latest
+buildah pull docker-archive:dataloader-service.tar
+buildah tag dataloader-service:latest harbor.kevin.local/library/dataloader-service:latest
+buildah push --tls-verify=false harbor.kevin.local/library/dataloader-service:latest
+rm dataloader-service.tar
+
+# Pull from Harbor and deploy
+microk8s ctr images pull --hosts-dir /var/snap/microk8s/current/args/certs.d harbor.kevin.local/library/dataloader-service:latest
+kubectl apply -f k8s/deployment-gpu.yaml
+kubectl apply -f k8s/service-gpu.yaml
+```
+
+#### 3. Alternative Docker workflow (if buildah not available)
 
 **Using PowerShell:**
 ```powershell
@@ -59,10 +88,10 @@ chmod +x deploy-to-harbor.sh
 docker build -t dataloader-service:latest .
 
 # Tag for Harbor
-docker tag dataloader-service:latest harbor.harbor.svc.cluster.local/library/dataloader-service:latest
+docker tag dataloader-service:latest harbor.kevin.local/library/dataloader-service:latest
 
 # Push to Harbor
-docker push harbor.harbor.svc.cluster.local/library/dataloader-service:latest
+docker push harbor.kevin.local/library/dataloader-service:latest
 
 # Deploy to Kubernetes (targets stormtrooper node)
 kubectl apply -f k8s/deployment-gpu.yaml
