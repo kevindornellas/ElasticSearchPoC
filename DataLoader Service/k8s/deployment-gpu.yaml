@@ -14,11 +14,11 @@ spec:
       labels:
         app: dataloader-service-gpu
     spec:
-      nodeName: kevin-ubuntu
+      nodeName: stormtrooper
       containers:
         - name: dataloader-service-gpu
-          image: dataloader-service-gpu:latest
-          imagePullPolicy: Never  # Use local image for microk8s
+          image: harbor.harbor.svc.cluster.local/library/dataloader-service:latest
+          imagePullPolicy: Always  # Pull from Harbor registry
           ports:
             - containerPort: 8000
               name: http

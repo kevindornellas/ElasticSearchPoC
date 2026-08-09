@@ -25,6 +25,52 @@ A FastAPI web service for managing Elasticsearch data and loading the MS MARCO d
 
 ## Build and Deploy to microk8s
 
+### Option 1: Deploy using Harbor Registry (Recommended)
+
+This approach uses Harbor as a container registry and deploys to the stormtrooper node.
+
+#### 1. Login to Harbor
+
+```bash
+# Login to Harbor registry
+docker login harbor.harbor.svc.cluster.local
+# Or if accessing from outside the cluster:
+# docker login <harbor-external-ip>
+```
+
+#### 2. Build, Push, and Deploy
+
+**Using PowerShell:**
+```powershell
+cd "DataLoader Service"
+.\deploy-to-harbor.ps1
+```
+
+**Using Bash:**
+```bash
+cd "DataLoader Service"
+chmod +x deploy-to-harbor.sh
+./deploy-to-harbor.sh
+```
+
+**Manual steps:**
+```bash
+# Build the image
+docker build -t dataloader-service:latest .
+
+# Tag for Harbor
+docker tag dataloader-service:latest harbor.harbor.svc.cluster.local/library/dataloader-service:latest
+
+# Push to Harbor
+docker push harbor.harbor.svc.cluster.local/library/dataloader-service:latest
+
+# Deploy to Kubernetes (targets stormtrooper node)
+kubectl apply -f k8s/deployment-gpu.yaml
+kubectl apply -f k8s/service-gpu.yaml
+```
+
+### Option 2: Deploy using local images (Legacy)
+
 ### 1. Build the Docker image
 
 ```bash
