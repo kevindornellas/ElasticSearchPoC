@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: elasticsearch-webui
-          image: 192.168.86.147/library/elasticsearch-webui:latest
+          image: harbor.kevin.local/library/elasticsearch-webui:latest
           imagePullPolicy: Always  # Pull from Harbor registry
           ports:
             - containerPort: 80

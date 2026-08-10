@@ -2,7 +2,9 @@
 
 Run these commands on your cluster machine to deploy to Harbor.
 
-**Note:** Docker daemon is not required. These scripts use `buildah` to build images directly.
+**Prerequisites:**
+- Docker daemon is not required (uses buildah)
+- Harbor hostname must be resolvable: Add `192.168.86.147 harbor.kevin.local` to `/etc/hosts` on all nodes
 
 ## DataLoader Service
 
