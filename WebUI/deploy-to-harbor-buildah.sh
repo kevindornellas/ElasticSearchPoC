@@ -23,11 +23,7 @@ echo "Step 3: Pushing to Harbor..."
 buildah push --tls-verify=false "${HARBOR_IMAGE}"
 
 echo ""
-echo "Step 4: Pulling image into microk8s from Harbor..."
-microk8s ctr images pull --hosts-dir /var/snap/microk8s/current/args/certs.d "${HARBOR_IMAGE}"
-
-echo ""
-echo "Step 5: Applying Kubernetes deployment..."
+echo "Step 4: Applying Kubernetes deployment..."
 kubectl apply -f k8s/deployment.yaml
 kubectl apply -f k8s/service.yaml
 
