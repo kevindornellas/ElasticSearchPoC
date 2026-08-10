@@ -1,6 +1,6 @@
 # Harbor Deployment Commands
 
-This document contains all commands needed to build and deploy the Elasticsearch PoC services to Harbor at **harbor.kevin.local** (192.168.86.147).
+This document contains all commands needed to build and deploy the Elasticsearch PoC services to Harbor at **harbor.kevin.local** (192.168.86.148).
 
 ## Prerequisites
 
@@ -134,10 +134,10 @@ cd ..
 ### Cannot push to Harbor with buildah
 - Using `--tls-verify=false` flag bypasses certificate validation
 - Check that the `library` project exists in Harbor
-- Verify Harbor is accessible: `curl http://harbor.kevin.local` or `curl http://192.168.86.147`
+- Verify Harbor is accessible: `curl http://harbor.kevin.local` or `curl http://192.168.86.148`
 
 ### Pod fails to pull image
-- Check if image exists in Harbor: visit http://harbor.kevin.local or http://192.168.86.147 in browser
+- Check if image exists in Harbor: visit http://harbor.kevin.local or http://192.168.86.148 in browser
 - Verify image is in microk8s: `microk8s ctr images ls | grep harbor`
 - Check pod events: `kubectl describe pod <pod-name>`
 - Ensure image was pulled: `microk8s ctr images pull --hosts-dir /var/snap/microk8s/current/args/certs.d harbor.kevin.local/library/<image-name>:latest`
@@ -154,7 +154,7 @@ If `harbor.kevin.local` doesn't resolve:
 cat /etc/hosts | grep harbor
 
 # Or use the IP directly
-# Replace harbor.kevin.local with 192.168.86.147 in scripts
+# Replace harbor.kevin.local with 192.168.86.148 in scripts
 ```
 
 ---
@@ -168,7 +168,7 @@ Build Machine (microk8s node)
     ↓ buildah tag
   Tagged Image
     ↓ buildah push --tls-verify=false
-Harbor Registry (harbor.kevin.local / 192.168.86.147)
+Harbor Registry (harbor.kevin.local / 192.168.86.148)
     ├── library/dataloader-service:latest
     └── library/elasticsearch-webui:latest
               ↓ microk8s ctr images pull
