@@ -1,5 +1,6 @@
 // Configuration - DataLoader service endpoint (stored in localStorage)
-const DEFAULT_API_URL = 'http://192.168.86.150:8001';
+// Use relative URL to proxy through nginx to Kubernetes service
+const DEFAULT_API_URL = '/api';
 
 function getApiBaseUrl() {
     return localStorage.getItem('apiBaseUrl') || DEFAULT_API_URL;
