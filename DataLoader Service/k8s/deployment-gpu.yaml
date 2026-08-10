@@ -17,7 +17,7 @@ spec:
       nodeName: stormtrooper
       containers:
         - name: dataloader-service-gpu
-          image: harbor.kevin.local/library/dataloader-service:latest
+          image: 192.168.86.147/library/dataloader-service:latest
           imagePullPolicy: Always  # Pull from Harbor registry
           ports:
             - containerPort: 8000

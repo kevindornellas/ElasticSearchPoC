@@ -7,7 +7,7 @@ set -e
 # Configuration
 IMAGE_NAME="elasticsearch-webui"
 IMAGE_TAG="latest"
-HARBOR_REGISTRY="harbor.kevin.local"
+HARBOR_REGISTRY="192.168.86.148"
 HARBOR_PROJECT="library"
 HARBOR_IMAGE="${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${IMAGE_NAME}:${IMAGE_TAG}"
 
