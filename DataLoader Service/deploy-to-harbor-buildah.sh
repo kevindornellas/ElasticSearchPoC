@@ -19,15 +19,19 @@ echo "Step 2: Tagging for Harbor..."
 buildah tag "${IMAGE_NAME}:${IMAGE_TAG}" "${HARBOR_IMAGE}"
 
 echo ""
-echo "Step 3: Pushing to Harbor..."
+echo "Step 3: Logging into Harbor..."
+buildah login "${HARBOR_REGISTRY}"
+
+echo ""
+echo "Step 4: Pushing to Harbor..."
 buildah push --tls-verify=false "${HARBOR_IMAGE}"
 
 echo ""
-echo "Step 4: Pulling image into microk8s from Harbor..."
+echo "Step 5: Pulling image into microk8s from Harbor..."
 microk8s ctr images pull --hosts-dir /var/snap/microk8s/current/args/certs.d "${HARBOR_IMAGE}"
 
 echo ""
-echo "Step 5: Applying Kubernetes deployment..."
+echo "Step 6: Applying Kubernetes deployment..."
 kubectl apply -f k8s/deployment-gpu.yaml
 kubectl apply -f k8s/service-gpu.yaml
 
