@@ -88,9 +88,23 @@ def get_embedding_model(model_name: str = None) -> SentenceTransformer:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         
-        logger.info(f"Loading embedding model: {model_name}")
-        loaded_models[model_name] = SentenceTransformer(model_name)
-        logger.info(f"Embedding model {model_name} loaded successfully")
+        # Determine device
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        logger.info(f"Loading embedding model: {model_name} on device: {device}")
+        
+        try:
+            # Load model with explicit device specification
+            loaded_models[model_name] = SentenceTransformer(model_name, device=device)
+            logger.info(f"Embedding model {model_name} loaded successfully on {device}")
+        except Exception as e:
+            logger.error(f"Error loading model {model_name}: {e}")
+            # If loading fails, try with CPU explicitly
+            if device != "cpu":
+                logger.info(f"Retrying model load on CPU...")
+                loaded_models[model_name] = SentenceTransformer(model_name, device="cpu")
+                logger.info(f"Embedding model {model_name} loaded successfully on CPU")
+            else:
+                raise
     
     return loaded_models[model_name]
 
