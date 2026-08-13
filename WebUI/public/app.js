@@ -92,10 +92,48 @@ document.addEventListener('DOMContentLoaded', () => {
     
     checkHealth();
     loadIndices();
+    loadAvailableModels();
     
     // Check health every 60 seconds
     setInterval(checkHealth, 60000);
 });
+
+// Fetch available models from Ollama via backend and populate dropdowns
+async function loadAvailableModels() {
+    try {
+        const result = await apiCall('/models');
+        const models = result.models || [];
+        const defaultModel = result.default || '';
+        
+        const embeddingSelect = document.getElementById('embedding-model');
+        const searchSelect = document.getElementById('search-embedding-model');
+        
+        embeddingSelect.innerHTML = '';
+        searchSelect.innerHTML = '';
+        
+        if (models.length === 0) {
+            embeddingSelect.innerHTML = '<option value="">No models available</option>';
+            searchSelect.innerHTML = '<option value="">No models available</option>';
+            return;
+        }
+        
+        models.forEach(m => {
+            const dimsLabel = m.dimensions ? ` (${m.dimensions} dims)` : '';
+            const option1 = new Option(`${m.name}${dimsLabel}`, m.name);
+            const option2 = new Option(m.name, m.name);
+            embeddingSelect.appendChild(option1);
+            searchSelect.appendChild(option2);
+        });
+        
+        // Select the default model
+        if (defaultModel) {
+            embeddingSelect.value = defaultModel;
+            searchSelect.value = defaultModel;
+        }
+    } catch (error) {
+        console.error('Failed to load models:', error);
+    }
+}
 
 // Update API URL from settings
 function updateApiUrl() {
@@ -220,26 +258,27 @@ async function loadIndices() {
     }
 }
 
-// Pre-load the embedding model
+// Pull the embedding model on Ollama
 async function preloadModelGpu() {
     const preloadBtn = document.getElementById('preload-btn-gpu');
     const embeddingModel = document.getElementById('embedding-model').value;
     
     try {
         preloadBtn.disabled = true;
-        preloadBtn.innerHTML = '⏳ Loading Model...';
+        preloadBtn.innerHTML = '⏳ Pulling Model...';
         
         const result = await apiCall('/model/load', { 
             method: 'POST',
             body: JSON.stringify({ model_name: embeddingModel })
         });
         
-        showToast(`Model ${result.model_name} loaded successfully!`, 'success');
+        showToast(`Model ${result.model_name} pulled successfully (${result.dimensions} dims)!`, 'success');
+        loadAvailableModels();
     } catch (error) {
         showToast(error.message, 'error');
     } finally {
         preloadBtn.disabled = false;
-        preloadBtn.innerHTML = '🧠 Pre-load Model';
+        preloadBtn.innerHTML = '🧠 Pull Model';
     }
 }
 

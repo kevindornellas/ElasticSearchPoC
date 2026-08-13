@@ -75,11 +75,7 @@
                 <div class="form-group">
                     <label for="embedding-model">Embedding Model:</label>
                     <select id="embedding-model">
-                        <option value="all-MiniLM-L6-v2">all-MiniLM-L6-v2 (384 dims, fast)</option>
-                        <option value="BAAI/bge-large-en-v1.5">bge-large-en-v1.5 (1024 dims)</option>
-                        <option value="hkunlp/instructor-xl">instructor-xl (768 dims)</option>
-                        <option value="intfloat/multilingual-e5-large">multilingual-e5-large (1024 dims)</option>
-                        <option value="intfloat/e5-mistral-7b-instruct">e5-mistral-7b (4096 dims, large)</option>
+                        <option value="">Loading models...</option>
                     </select>
                 </div>
                 
@@ -131,7 +127,7 @@
                 </button>
                 
                 <button class="btn btn-secondary" id="preload-btn-gpu" onclick="preloadModelGpu()">
-                    🧠 Pre-load Model
+                    🧠 Pull Model
                 </button>
                 
                 <div class="progress-container progress-container-gpu" id="progress-container-gpu" style="display: none;">
@@ -176,11 +172,7 @@
                     <option value="text">📝 Text (BM25)</option>
                 </select>
                 <select id="search-embedding-model">
-                    <option value="all-MiniLM-L6-v2">all-MiniLM-L6-v2</option>
-                    <option value="BAAI/bge-large-en-v1.5">bge-large-en-v1.5</option>
-                    <option value="hkunlp/instructor-xl">instructor-xl</option>
-                    <option value="intfloat/multilingual-e5-large">multilingual-e5-large</option>
-                    <option value="intfloat/e5-mistral-7b-instruct">e5-mistral-7b</option>
+                    <option value="">Loading models...</option>
                 </select>
                 <button class="btn btn-primary" onclick="searchData()">Search</button>
             </div>

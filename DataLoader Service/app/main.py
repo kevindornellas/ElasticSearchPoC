@@ -3,8 +3,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from elasticsearch import Elasticsearch, helpers
 from datasets import load_dataset
-from sentence_transformers import SentenceTransformer
-import torch
 import os
 import logging
 import re
@@ -22,91 +20,86 @@ from typing import Generator
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Supported embedding models with their dimensions
-EMBEDDING_MODELS = {
-    "all-MiniLM-L6-v2": {
-        "name": "all-MiniLM-L6-v2",
-        "dims": 384,
-        "description": "Fast, lightweight model (384 dims)"
-    },
-    "BAAI/bge-large-en-v1.5": {
-        "name": "BAAI/bge-large-en-v1.5",
-        "dims": 1024,
-        "description": "High quality English embeddings (1024 dims)"
-    },
-    "hkunlp/instructor-xl": {
-        "name": "hkunlp/instructor-xl",
-        "dims": 768,
-        "description": "Instruction-tuned model (768 dims) - ~5GB VRAM"
-    },
-    "intfloat/multilingual-e5-large": {
-        "name": "intfloat/multilingual-e5-large",
-        "dims": 1024,
-        "description": "Multilingual embeddings (1024 dims) - ~2GB VRAM"
-    },
-    "intfloat/e5-mistral-7b-instruct": {
-        "name": "intfloat/e5-mistral-7b-instruct",
-        "dims": 4096,
-        "description": "Large LLM-based embeddings (4096 dims) - ~14GB VRAM, CPU recommended"
-    }
-}
+# Ollama configuration
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://192.168.86.151:11434")
 
-# Default model
-DEFAULT_MODEL_NAME = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+# Cache for discovered embedding dimensions per model
+_model_dims_cache: dict[str, int] = {}
 
-# Cache for loaded models
-loaded_models: dict[str, SentenceTransformer] = {}
+# Cache for available models (with TTL)
+_models_cache: dict = {"models": [], "fetched_at": 0}
+MODELS_CACHE_TTL = 60  # seconds
 
 
-def get_model_info(model_name: str) -> dict:
-    """Get model info, defaulting to all-MiniLM-L6-v2 if not found."""
-    return EMBEDDING_MODELS.get(model_name, EMBEDDING_MODELS["all-MiniLM-L6-v2"])
+def get_ollama_models() -> list[dict]:
+    """Fetch available models from Ollama /api/tags, cached with TTL."""
+    now = time.time()
+    if _models_cache["models"] and (now - _models_cache["fetched_at"]) < MODELS_CACHE_TTL:
+        return _models_cache["models"]
+
+    try:
+        resp = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        models = [
+            {
+                "name": m["name"],
+                "size": m.get("size", 0),
+                "modified_at": m.get("modified_at", ""),
+            }
+            for m in data.get("models", [])
+        ]
+        _models_cache["models"] = models
+        _models_cache["fetched_at"] = now
+        return models
+    except Exception as e:
+        logger.error(f"Failed to fetch models from Ollama: {e}")
+        return _models_cache["models"]  # return stale cache if available
+
+
+def get_default_model() -> str:
+    """Return the configured default or the first model from Ollama."""
+    env_model = os.getenv("EMBEDDING_MODEL", "")
+    if env_model:
+        return env_model
+    models = get_ollama_models()
+    if models:
+        return models[0]["name"]
+    return "nomic-embed-text"
 
 
 def get_embedding_dims(model_name: str) -> int:
-    """Get embedding dimensions for a model."""
-    return get_model_info(model_name)["dims"]
+    """Discover embedding dimensions by running a test embed. Cached per model."""
+    if model_name in _model_dims_cache:
+        return _model_dims_cache[model_name]
+
+    try:
+        resp = requests.post(
+            f"{OLLAMA_BASE_URL}/api/embed",
+            json={"model": model_name, "input": ["dimension test"]},
+            timeout=120,
+        )
+        resp.raise_for_status()
+        embeddings = resp.json().get("embeddings", [])
+        if embeddings:
+            dims = len(embeddings[0])
+            _model_dims_cache[model_name] = dims
+            return dims
+    except Exception as e:
+        logger.error(f"Failed to detect dims for model {model_name}: {e}")
+
+    # Fallback
+    return _model_dims_cache.get(model_name, 768)
 
 
-def get_embedding_model(model_name: str = None) -> SentenceTransformer:
-    """Lazy load the embedding model. Only keeps one model in memory at a time
-    to avoid GPU OOM errors on cards with limited VRAM."""
-    global loaded_models
-    
-    if model_name is None:
-        model_name = DEFAULT_MODEL_NAME
-    
-    # Normalize model name
-    model_info = get_model_info(model_name)
-    model_name = model_info["name"]
-    
-    if model_name not in loaded_models:
-        # Evict all other models first to free GPU memory
-        for old_name in list(loaded_models.keys()):
-            logger.info(f"Unloading model '{old_name}' to free memory")
-            del loaded_models[old_name]
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
-        # Determine device
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        logger.info(f"Loading embedding model: {model_name} on device: {device}")
-        
-        try:
-            # Load model with explicit device specification
-            loaded_models[model_name] = SentenceTransformer(model_name, device=device)
-            logger.info(f"Embedding model {model_name} loaded successfully on {device}")
-        except Exception as e:
-            logger.error(f"Error loading model {model_name}: {e}")
-            # If loading fails, try with CPU explicitly
-            if device != "cpu":
-                logger.info(f"Retrying model load on CPU...")
-                loaded_models[model_name] = SentenceTransformer(model_name, device="cpu")
-                logger.info(f"Embedding model {model_name} loaded successfully on CPU")
-            else:
-                raise
-    
-    return loaded_models[model_name]
+def pull_model(model_name: str) -> None:
+    """Pull a model on the Ollama server."""
+    resp = requests.post(
+        f"{OLLAMA_BASE_URL}/api/pull",
+        json={"name": model_name, "stream": False},
+        timeout=600,
+    )
+    resp.raise_for_status()
 
 
 class TextChunker:
@@ -168,15 +161,23 @@ class TextChunker:
 
 
 def generate_embeddings(texts: list[str], batch_size: int = 32, model_name: str = None) -> list[list[float]]:
-    """Generate embeddings for a list of texts."""
-    model = get_embedding_model(model_name)
-    embeddings = model.encode(
-        texts,
-        batch_size=batch_size,
-        show_progress_bar=False,
-        convert_to_numpy=True
-    )
-    return embeddings.tolist()
+    """Generate embeddings via Ollama /api/embed endpoint."""
+    if model_name is None:
+        model_name = get_default_model()
+
+    all_embeddings = []
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i:i + batch_size]
+        resp = requests.post(
+            f"{OLLAMA_BASE_URL}/api/embed",
+            json={"model": model_name, "input": batch},
+            timeout=300,
+        )
+        resp.raise_for_status()
+        batch_embeddings = resp.json().get("embeddings", [])
+        all_embeddings.extend(batch_embeddings)
+
+    return all_embeddings
 
 app = FastAPI(
     title="Elasticsearch Data Loader",
@@ -226,7 +227,7 @@ class LoadConfig(BaseModel):
     chunk_size: int = 512
     chunk_overlap: int = 50
     embedding_batch_size: int = 32
-    embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_model: str | None = None
 
 
 class ESCILoadConfig(BaseModel):
@@ -235,7 +236,7 @@ class ESCILoadConfig(BaseModel):
     batch_size: int = 500
     embedding_batch_size: int = 32
     locale: str = "us"  # us, es, jp
-    embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_model: str | None = None
 
 
 class ProductSearchConfig(BaseModel):
@@ -243,7 +244,7 @@ class ProductSearchConfig(BaseModel):
     max_documents: int | None = None
     batch_size: int = 500
     embedding_batch_size: int = 32
-    embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_model: str | None = None
 
 
 class OpenFoodFactsConfig(BaseModel):
@@ -251,7 +252,7 @@ class OpenFoodFactsConfig(BaseModel):
     max_documents: int | None = None
     batch_size: int = 500
     embedding_batch_size: int = 32
-    embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_model: str | None = None
 
 
 class AmazonBestSellersConfig(BaseModel):
@@ -259,7 +260,7 @@ class AmazonBestSellersConfig(BaseModel):
     max_documents: int | None = None
     batch_size: int = 500
     embedding_batch_size: int = 32
-    embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_model: str | None = None
 
 
 class ChunkConfig(BaseModel):
@@ -271,11 +272,11 @@ class ChunkConfig(BaseModel):
 class EmbeddingRequest(BaseModel):
     texts: list[str]
     batch_size: int = 32
-    model_name: str = "all-MiniLM-L6-v2"
+    model_name: str | None = None
 
 
 class ModelLoadRequest(BaseModel):
-    model_name: str = "all-MiniLM-L6-v2"
+    model_name: str | None = None
 
 
 class IndexConfig(BaseModel):
@@ -341,12 +342,13 @@ def chunk_text(config: ChunkConfig):
 def embed_texts(request: EmbeddingRequest):
     """Generate embeddings for a list of texts."""
     try:
-        model_info = get_model_info(request.model_name)
-        embeddings = generate_embeddings(request.texts, request.batch_size, request.model_name)
+        model_name = request.model_name or get_default_model()
+        embeddings = generate_embeddings(request.texts, request.batch_size, model_name)
+        dims = len(embeddings[0]) if embeddings else get_embedding_dims(model_name)
         return {
             "status": "success",
-            "model": model_info["name"],
-            "dimensions": model_info["dims"],
+            "model": model_name,
+            "dimensions": dims,
             "count": len(embeddings),
             "embeddings": embeddings
         }
@@ -357,19 +359,20 @@ def embed_texts(request: EmbeddingRequest):
 
 @app.get("/models")
 def list_models():
-    """List all available embedding models."""
+    """List available models from Ollama."""
+    models = get_ollama_models()
+    default = get_default_model()
     return {
         "models": [
             {
-                "id": model_id,
-                "name": info["name"],
-                "dimensions": info["dims"],
-                "description": info["description"],
-                "loaded": model_id in loaded_models
+                "id": m["name"],
+                "name": m["name"],
+                "dimensions": _model_dims_cache.get(m["name"]),
+                "size": m.get("size", 0),
             }
-            for model_id, info in EMBEDDING_MODELS.items()
+            for m in models
         ],
-        "default": DEFAULT_MODEL_NAME
+        "default": default
     }
 
 
@@ -377,32 +380,35 @@ def list_models():
 def get_model_info_endpoint(model_name: str = None):
     """Get information about an embedding model."""
     if model_name is None:
-        model_name = DEFAULT_MODEL_NAME
-    
-    model_info = get_model_info(model_name)
+        model_name = get_default_model()
+
+    dims = _model_dims_cache.get(model_name)
     return {
-        "model_name": model_info["name"],
-        "dimensions": model_info["dims"],
-        "description": model_info["description"],
-        "model_loaded": model_info["name"] in loaded_models
+        "model_name": model_name,
+        "dimensions": dims,
+        "ollama_url": OLLAMA_BASE_URL
     }
 
 
 @app.post("/model/load")
 def preload_model(request: ModelLoadRequest = None):
-    """Pre-load an embedding model into memory."""
+    """Pull a model on the Ollama server so it's ready for use."""
     try:
-        model_name = request.model_name if request else DEFAULT_MODEL_NAME
-        model_info = get_model_info(model_name)
-        get_embedding_model(model_name)
+        model_name = request.model_name if request else get_default_model()
+        logger.info(f"Pulling model {model_name} on Ollama...")
+        pull_model(model_name)
+        # Detect dimensions after pull
+        dims = get_embedding_dims(model_name)
+        # Invalidate model cache so new model shows up
+        _models_cache["fetched_at"] = 0
         return {
             "status": "success",
-            "message": "Model loaded successfully",
-            "model_name": model_info["name"],
-            "dimensions": model_info["dims"]
+            "message": "Model pulled successfully",
+            "model_name": model_name,
+            "dimensions": dims
         }
     except Exception as e:
-        logger.error(f"Error loading model: {e}")
+        logger.error(f"Error pulling model: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -489,13 +495,13 @@ def load_msmarco_background(config: LoadConfig):
         loading_status["end_time"] = None
         loading_status["elapsed_seconds"] = 0
         
+        model_name = config.embedding_model or get_default_model()
         es = get_es_client()
         
-        # Pre-load embedding model
-        loading_status["message"] = "Loading embedding model..."
-        logger.info(f"Loading embedding model: {config.embedding_model}")
-        model = get_embedding_model(config.embedding_model)
-        embedding_dims = get_embedding_dims(config.embedding_model)
+        # Verify embedding model on Ollama
+        loading_status["message"] = "Verifying embedding model on Ollama..."
+        logger.info(f"Using embedding model: {model_name}")
+        embedding_dims = get_embedding_dims(model_name)
         
         # Initialize chunker
         chunker = TextChunker(
@@ -583,18 +589,17 @@ def load_msmarco_background(config: LoadConfig):
                     
                     # Process batch when full
                     if len(batch_texts) >= config.embedding_batch_size:
-                        # Generate embeddings for batch
-                        embeddings = model.encode(
+                        # Generate embeddings via Ollama
+                        embeddings = generate_embeddings(
                             batch_texts,
                             batch_size=config.embedding_batch_size,
-                            show_progress_bar=False,
-                            convert_to_numpy=True
+                            model_name=model_name
                         )
                         
                         # Create bulk actions
                         actions = []
                         for doc, embedding in zip(batch_docs, embeddings):
-                            doc["embedding"] = embedding.tolist()
+                            doc["embedding"] = embedding
                             actions.append({
                                 "_index": config.index_name,
                                 "_source": doc
@@ -623,16 +628,15 @@ def load_msmarco_background(config: LoadConfig):
         
         # Process remaining batch
         if batch_texts:
-            embeddings = model.encode(
+            embeddings = generate_embeddings(
                 batch_texts,
                 batch_size=config.embedding_batch_size,
-                show_progress_bar=False,
-                convert_to_numpy=True
+                model_name=model_name
             )
             
             actions = []
             for doc, embedding in zip(batch_docs, embeddings):
-                doc["embedding"] = embedding.tolist()
+                doc["embedding"] = embedding
                 actions.append({
                     "_index": config.index_name,
                     "_source": doc
@@ -743,7 +747,7 @@ class VectorSearchRequest(BaseModel):
     index_name: str = "msmarco"
     size: int = 10
     num_candidates: int = 100
-    embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_model: str | None = None
 
 
 @app.post("/search/vector")
@@ -760,9 +764,8 @@ def vector_search(request: VectorSearchRequest):
             raise HTTPException(status_code=404, detail=f"Index '{request.index_name}' not found")
         
         # Generate embedding for the query
-        model = get_embedding_model(request.embedding_model)
-        model_info = get_model_info(request.embedding_model)
-        query_embedding = model.encode(request.query, convert_to_numpy=True).tolist()
+        model_name = request.embedding_model or get_default_model()
+        query_embedding = generate_embeddings([request.query], model_name=model_name)[0]
         
         # Perform kNN search
         result = es.search(
@@ -783,7 +786,7 @@ def vector_search(request: VectorSearchRequest):
         return {
             "total": result["hits"]["total"]["value"],
             "search_type": "vector",
-            "model": model_info["name"],
+            "model": model_name,
             "hits": [
                 {
                     "score": hit["_score"],
@@ -806,7 +809,7 @@ class HybridSearchRequest(BaseModel):
     num_candidates: int = 100
     vector_boost: float = 0.7
     text_boost: float = 0.3
-    embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_model: str | None = None
 
 
 @app.post("/search/hybrid")
@@ -823,9 +826,8 @@ def hybrid_search(request: HybridSearchRequest):
             raise HTTPException(status_code=404, detail=f"Index '{request.index_name}' not found")
         
         # Generate embedding for the query
-        model = get_embedding_model(request.embedding_model)
-        model_info = get_model_info(request.embedding_model)
-        query_embedding = model.encode(request.query, convert_to_numpy=True).tolist()
+        model_name = request.embedding_model or get_default_model()
+        query_embedding = generate_embeddings([request.query], model_name=model_name)[0]
         
         # Perform hybrid search with sub_searches and RRF
         result = es.search(
@@ -871,7 +873,7 @@ def hybrid_search(request: HybridSearchRequest):
         return {
             "total": result["hits"]["total"]["value"],
             "search_type": "hybrid",
-            "model": model_info["name"],
+            "model": model_name,
             "vector_boost": request.vector_boost,
             "text_boost": request.text_boost,
             "hits": [
@@ -901,13 +903,13 @@ def load_esci_background(config: ESCILoadConfig):
         loading_status["end_time"] = None
         loading_status["elapsed_seconds"] = 0
         
+        model_name = config.embedding_model or get_default_model()
         es = get_es_client()
         
-        # Pre-load embedding model
-        loading_status["message"] = "Loading embedding model..."
-        logger.info(f"Loading embedding model: {config.embedding_model}")
-        model = get_embedding_model(config.embedding_model)
-        embedding_dims = get_embedding_dims(config.embedding_model)
+        # Verify embedding model on Ollama
+        loading_status["message"] = "Verifying embedding model on Ollama..."
+        logger.info(f"Using embedding model: {model_name}")
+        embedding_dims = get_embedding_dims(model_name)
         
         # Create index with product mapping
         loading_status["message"] = "Creating product index with vector mapping..."
@@ -1014,11 +1016,11 @@ def load_esci_background(config: ESCILoadConfig):
             # Process batch when full
             if len(batch_texts) >= config.embedding_batch_size:
                 # Generate embeddings
-                embeddings = model.encode(batch_texts, show_progress_bar=False)
+                embeddings = generate_embeddings(batch_texts, model_name=model_name)
                 
                 # Add embeddings to docs
                 for i, doc in enumerate(batch_docs):
-                    doc["embedding"] = embeddings[i].tolist()
+                    doc["embedding"] = embeddings[i]
                 
                 # Bulk index
                 actions = []
@@ -1042,9 +1044,9 @@ def load_esci_background(config: ESCILoadConfig):
         
         # Process remaining batch
         if batch_texts:
-            embeddings = model.encode(batch_texts, show_progress_bar=False)
+            embeddings = generate_embeddings(batch_texts, model_name=model_name)
             for i, doc in enumerate(batch_docs):
-                doc["embedding"] = embeddings[i].tolist()
+                doc["embedding"] = embeddings[i]
             
             actions = []
             for doc in batch_docs:
@@ -1124,13 +1126,13 @@ def load_product_search_background(config: ProductSearchConfig):
         loading_status["end_time"] = None
         loading_status["elapsed_seconds"] = 0
         
+        model_name = config.embedding_model or get_default_model()
         es = get_es_client()
         
-        # Pre-load embedding model
-        loading_status["message"] = "Loading embedding model..."
-        logger.info(f"Loading embedding model: {config.embedding_model}")
-        model = get_embedding_model(config.embedding_model)
-        embedding_dims = get_embedding_dims(config.embedding_model)
+        # Verify embedding model on Ollama
+        loading_status["message"] = "Verifying embedding model on Ollama..."
+        logger.info(f"Using embedding model: {model_name}")
+        embedding_dims = get_embedding_dims(model_name)
         
         # Create index with product mapping
         loading_status["message"] = "Creating product index with vector mapping..."
@@ -1210,11 +1212,11 @@ def load_product_search_background(config: ProductSearchConfig):
             # Process batch when full
             if len(batch_texts) >= config.embedding_batch_size:
                 # Generate embeddings
-                embeddings = model.encode(batch_texts, show_progress_bar=False)
+                embeddings = generate_embeddings(batch_texts, model_name=model_name)
                 
                 # Add embeddings to docs
                 for i, doc in enumerate(batch_docs):
-                    doc["embedding"] = embeddings[i].tolist()
+                    doc["embedding"] = embeddings[i]
                 
                 # Bulk index
                 actions = []
@@ -1238,9 +1240,9 @@ def load_product_search_background(config: ProductSearchConfig):
         
         # Process remaining batch
         if batch_texts:
-            embeddings = model.encode(batch_texts, show_progress_bar=False)
+            embeddings = generate_embeddings(batch_texts, model_name=model_name)
             for i, doc in enumerate(batch_docs):
-                doc["embedding"] = embeddings[i].tolist()
+                doc["embedding"] = embeddings[i]
             
             actions = []
             for doc in batch_docs:
@@ -1323,13 +1325,13 @@ def load_open_food_facts_background(config: OpenFoodFactsConfig):
         loading_status["end_time"] = None
         loading_status["elapsed_seconds"] = 0
         
+        model_name = config.embedding_model or get_default_model()
         es = get_es_client()
         
-        # Pre-load embedding model
-        loading_status["message"] = "Loading embedding model..."
-        logger.info(f"Loading embedding model: {config.embedding_model}")
-        model = get_embedding_model(config.embedding_model)
-        embedding_dims = get_embedding_dims(config.embedding_model)
+        # Verify embedding model on Ollama
+        loading_status["message"] = "Verifying embedding model on Ollama..."
+        logger.info(f"Using embedding model: {model_name}")
+        embedding_dims = get_embedding_dims(model_name)
         
         # Create index with food product mapping
         loading_status["message"] = "Creating Open Food Facts index..."
@@ -1483,10 +1485,10 @@ def load_open_food_facts_background(config: OpenFoodFactsConfig):
                     
                     # Process batch when full
                     if len(batch_texts) >= config.embedding_batch_size:
-                        embeddings = model.encode(batch_texts, show_progress_bar=False)
+                        embeddings = generate_embeddings(batch_texts, model_name=model_name)
                         
                         for i, d in enumerate(batch_docs):
-                            d["embedding"] = embeddings[i].tolist()
+                            d["embedding"] = embeddings[i]
                         
                         actions = []
                         for d in batch_docs:
@@ -1509,9 +1511,9 @@ def load_open_food_facts_background(config: OpenFoodFactsConfig):
         
         # Process remaining batch
         if batch_texts:
-            embeddings = model.encode(batch_texts, show_progress_bar=False)
+            embeddings = generate_embeddings(batch_texts, model_name=model_name)
             for i, d in enumerate(batch_docs):
-                d["embedding"] = embeddings[i].tolist()
+                d["embedding"] = embeddings[i]
             
             actions = []
             for d in batch_docs:
@@ -1595,13 +1597,13 @@ def load_amazon_best_sellers_background(config: AmazonBestSellersConfig):
         loading_status["end_time"] = None
         loading_status["elapsed_seconds"] = 0
         
+        model_name = config.embedding_model or get_default_model()
         es = get_es_client()
         
-        # Pre-load embedding model
-        loading_status["message"] = "Loading embedding model..."
-        logger.info(f"Loading embedding model: {config.embedding_model}")
-        model = get_embedding_model(config.embedding_model)
-        embedding_dims = get_embedding_dims(config.embedding_model)
+        # Verify embedding model on Ollama
+        loading_status["message"] = "Verifying embedding model on Ollama..."
+        logger.info(f"Using embedding model: {model_name}")
+        embedding_dims = get_embedding_dims(model_name)
         
         # Create index with Amazon product mapping (matching actual CSV columns)
         loading_status["message"] = "Creating Amazon Best Sellers index..."
@@ -1769,10 +1771,10 @@ def load_amazon_best_sellers_background(config: AmazonBestSellersConfig):
                         
                         # Process batch when full
                         if len(batch_texts) >= config.embedding_batch_size:
-                            embeddings = model.encode(batch_texts, show_progress_bar=False)
+                            embeddings = generate_embeddings(batch_texts, model_name=model_name)
                             
                             for i, doc in enumerate(batch_docs):
-                                doc["embedding"] = embeddings[i].tolist()
+                                doc["embedding"] = embeddings[i]
                             
                             actions = []
                             for doc in batch_docs:
@@ -1798,9 +1800,9 @@ def load_amazon_best_sellers_background(config: AmazonBestSellersConfig):
         
         # Process remaining batch
         if batch_texts:
-            embeddings = model.encode(batch_texts, show_progress_bar=False)
+            embeddings = generate_embeddings(batch_texts, model_name=model_name)
             for i, doc in enumerate(batch_docs):
-                doc["embedding"] = embeddings[i].tolist()
+                doc["embedding"] = embeddings[i]
             
             actions = []
             for doc in batch_docs:
