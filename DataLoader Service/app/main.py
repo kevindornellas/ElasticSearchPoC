@@ -263,6 +263,14 @@ class AmazonBestSellersConfig(BaseModel):
     embedding_model: str | None = None
 
 
+class AmazonElectronicsConfig(BaseModel):
+    index_name: str = "amazon-electronics"
+    max_documents: int | None = None
+    batch_size: int = 500
+    embedding_batch_size: int = 32
+    embedding_model: str | None = None
+
+
 class ChunkConfig(BaseModel):
     text: str
     chunk_size: int = 512
@@ -1865,6 +1873,231 @@ def load_amazon_best_sellers(config: AmazonBestSellersConfig, background_tasks: 
     return {
         "status": "started",
         "message": "Amazon Best Sellers loading started in background",
+        "index_name": config.index_name,
+        "max_documents": config.max_documents
+    }
+
+
+def load_amazon_electronics_background(config: AmazonElectronicsConfig):
+    """Background task to load Amazon Electronics product metadata from Hugging Face."""
+    global loading_status
+
+    try:
+        loading_status["is_loading"] = True
+        loading_status["message"] = "Initializing Amazon Electronics load..."
+        loading_status["progress"] = 0
+        loading_status["start_time"] = time.time()
+        loading_status["end_time"] = None
+        loading_status["elapsed_seconds"] = 0
+
+        model_name = config.embedding_model or get_default_model()
+        es = get_es_client()
+
+        loading_status["message"] = "Verifying embedding model on Ollama..."
+        logger.info(f"Using embedding model: {model_name}")
+        embedding_dims = get_embedding_dims(model_name)
+
+        loading_status["message"] = "Creating Amazon Electronics index..."
+        index_mapping = {
+            "mappings": {
+                "properties": {
+                    "parent_asin": {"type": "keyword"},
+                    "title": {"type": "text", "analyzer": "standard"},
+                    "description": {"type": "text", "analyzer": "standard"},
+                    "features": {"type": "text", "analyzer": "standard"},
+                    "store": {"type": "keyword"},
+                    "price": {"type": "text"},
+                    "average_rating": {"type": "float"},
+                    "rating_number": {"type": "integer"},
+                    "bought_in_last_month": {"type": "integer"},
+                    "categories": {"type": "keyword"},
+                    "main_category": {"type": "keyword"},
+                    "image_url": {"type": "keyword"},
+                    "details": {"type": "object", "enabled": False},  # free-form dict, not indexed
+                    "embedding": {
+                        "type": "dense_vector",
+                        "dims": embedding_dims,
+                        "index": True,
+                        "similarity": "cosine"
+                    },
+                    "combined_text": {"type": "text", "analyzer": "standard"},
+                    "embedding_model": {"type": "keyword"}
+                }
+            },
+            "settings": {
+                "number_of_shards": 1,
+                "number_of_replicas": 0,
+                "refresh_interval": "30s"
+            }
+        }
+
+        if es.indices.exists(index=config.index_name):
+            es.indices.delete(index=config.index_name)
+
+        es.indices.create(index=config.index_name, body=index_mapping)
+        logger.info(f"Created Amazon Electronics index: {config.index_name}")
+
+        loading_status["message"] = "Loading Amazon Electronics metadata from Hugging Face..."
+        logger.info("Loading raw_meta_Electronics dataset...")
+
+        dataset = load_dataset(
+            "McAuley-Lab/Amazon-Reviews-2023",
+            "raw_meta_Electronics",
+            split="full",
+            streaming=True,
+            trust_remote_code=True,
+        )
+
+        loading_status["message"] = "Processing and embedding products..."
+
+        batch_texts = []
+        batch_docs = []
+        product_count = 0
+
+        for item in dataset:
+            if config.max_documents and product_count >= config.max_documents:
+                break
+
+            parent_asin = item.get("parent_asin", "") or ""
+            title = item.get("title", "") or ""
+
+            if not title or len(title) < 5:
+                continue
+
+            # Flatten list fields to strings
+            description = " ".join(item.get("description", []) or [])
+            features = " ".join(item.get("features", []) or [])
+            categories = item.get("categories", []) or []
+            store = item.get("store", "") or ""
+
+            # Pull the first image thumbnail URL
+            image_url = ""
+            images = item.get("images", []) or []
+            if images and isinstance(images[0], dict):
+                image_url = images[0].get("thumb", "") or images[0].get("large", "") or ""
+
+            try:
+                price = str(item.get("price", "") or "")
+            except Exception:
+                price = ""
+
+            try:
+                average_rating = float(item.get("average_rating", 0) or 0)
+            except (ValueError, TypeError):
+                average_rating = 0.0
+
+            try:
+                rating_number = int(item.get("rating_number", 0) or 0)
+            except (ValueError, TypeError):
+                rating_number = 0
+
+            try:
+                bought_in_last_month = int(item.get("bought_in_last_month", 0) or 0)
+            except (ValueError, TypeError):
+                bought_in_last_month = 0
+
+            combined_text = f"{title}. {store}. {features} {description}".strip()
+
+            if len(combined_text) < 10:
+                continue
+
+            doc = {
+                "parent_asin": parent_asin,
+                "title": title,
+                "description": description,
+                "features": features,
+                "store": store,
+                "price": price,
+                "average_rating": average_rating,
+                "rating_number": rating_number,
+                "bought_in_last_month": bought_in_last_month,
+                "categories": categories,
+                "main_category": item.get("main_category", "") or "",
+                "image_url": image_url,
+                "details": item.get("details", {}) or {},
+                "combined_text": combined_text,
+                "embedding_model": model_name,
+            }
+
+            batch_texts.append(combined_text[:1000])
+            batch_docs.append(doc)
+            product_count += 1
+
+            if product_count % 100 == 0:
+                loading_status["message"] = f"Processing products... {product_count} processed"
+                loading_status["progress"] = product_count
+                loading_status["total"] = config.max_documents or 0
+
+            if len(batch_texts) >= config.embedding_batch_size:
+                embeddings = generate_embeddings(batch_texts, model_name=model_name)
+
+                for i, doc in enumerate(batch_docs):
+                    doc["embedding"] = embeddings[i]
+
+                actions = [
+                    {"_index": config.index_name, "_id": doc["parent_asin"] or str(i), "_source": doc}
+                    for i, doc in enumerate(batch_docs)
+                ]
+
+                helpers.bulk(es, actions, chunk_size=config.batch_size, request_timeout=120, raise_on_error=False)
+
+                batch_texts = []
+                batch_docs = []
+
+        # Process remaining batch
+        if batch_texts:
+            embeddings = generate_embeddings(batch_texts, model_name=model_name)
+            for i, doc in enumerate(batch_docs):
+                doc["embedding"] = embeddings[i]
+
+            actions = [
+                {"_index": config.index_name, "_id": doc["parent_asin"] or str(i), "_source": doc}
+                for i, doc in enumerate(batch_docs)
+            ]
+
+            helpers.bulk(es, actions, chunk_size=config.batch_size, request_timeout=120, raise_on_error=False)
+
+        es.indices.refresh(index=config.index_name)
+
+        loading_status["message"] = f"Completed! Indexed {product_count} electronics products"
+        loading_status["progress"] = product_count
+        logger.info(f"Amazon Electronics indexing complete: {product_count} products")
+
+    except Exception as e:
+        logger.error(f"Error loading Amazon Electronics dataset: {e}")
+        loading_status["message"] = f"Error: {str(e)}"
+    finally:
+        loading_status["is_loading"] = False
+        loading_status["end_time"] = time.time()
+        if loading_status["start_time"]:
+            loading_status["elapsed_seconds"] = round(loading_status["end_time"] - loading_status["start_time"], 1)
+
+
+@app.post("/load/amazon-electronics")
+def load_amazon_electronics(config: AmazonElectronicsConfig, background_tasks: BackgroundTasks):
+    """
+    Load Amazon Electronics product metadata into Elasticsearch.
+
+    This runs as a background task. Use /status to check progress.
+    Data source: McAuley-Lab/Amazon-Reviews-2023 (raw_meta_Electronics, ~786k products)
+    """
+    global loading_status
+
+    if loading_status["is_loading"]:
+        raise HTTPException(status_code=409, detail="A loading operation is already in progress")
+
+    loading_status = {
+        "is_loading": True,
+        "progress": 0,
+        "total": config.max_documents or 0,
+        "message": "Starting Amazon Electronics dataset load..."
+    }
+
+    background_tasks.add_task(load_amazon_electronics_background, config)
+
+    return {
+        "status": "started",
+        "message": "Amazon Electronics loading started in background",
         "index_name": config.index_name,
         "max_documents": config.max_documents
     }
